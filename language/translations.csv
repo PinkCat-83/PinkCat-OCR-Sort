@@ -1,0 +1,108 @@
+key;Español;English
+app_title;PinkCat OCR Sort;PinkCat OCR Sort
+app_version;v1.2;v1.2
+section_folders;01  CARPETAS;01  FOLDERS
+section_names;02  NOMBRES (OCR FUZZY MATCH);02  NAMES (OCR FUZZY MATCH)
+section_action;03  ACCIÓN;03  ACTION
+label_source_folder;Carpeta origen;Source folder
+placeholder_source_folder;Selecciona la carpeta de fotos…;Select the photos folder…
+label_dest_folder;Carpeta destino;Destination folder
+placeholder_dest_folder;Donde se guardarán los archivos…;Where files will be saved…
+check_same_folder;Organizar en la misma carpeta origen;Organize in same folder as source
+label_names_file;Archivo de nombres (.txt);Names file (.txt)
+placeholder_names_file;Selecciona el archivo de nombres…;Select the names file…
+btn_load;↺  CARGAR;↺  LOAD
+btn_create_sample;+ CREAR EJEMPLO;+ CREATE SAMPLE
+names_status_none;Sin nombres cargados;No names loaded
+names_status_missing;Archivo de nombres no encontrado — usa CARGAR o CREAR EJEMPLO;Names file not found — use LOAD or CREATE SAMPLE
+names_status_empty;⚠ Archivo vacío o sin nombres válidos;⚠ Empty file or no valid names
+names_status_loaded;✔ {count} nombres: {preview};✔ {count} names: {preview}
+label_threshold;Umbral similitud:;Similarity threshold:
+threshold_hint;Bajo = más permisivo  ·  Alto = más estricto\nSin match → carpeta '_Sin clasificar';Low = more permissive  ·  High = stricter\nNo match → '_Unclassified' folder
+check_enable_ocr;Activar OCR;Enable OCR
+check_gpu;GPU (CUDA);GPU (CUDA)
+check_review_mode;Modo revisión (uno a uno con previsualización);Review mode (batch-by-batch with preview)
+btn_start;▶  INICIAR ORGANIZACIÓN;▶  START ORGANIZING
+btn_cancel;⛔  CANCELAR;⛔  CANCEL
+filename_format_hint;Nombre: dd-MM-yyyy ; HH.mm.ss.ffff;Name: dd-MM-yyyy ; HH.mm.ss.ffff
+stat_processed;Procesados;Processed
+stat_skipped;Omitidos;Skipped
+stat_errors;Errores;Errors
+stat_total;Total;Total
+log_title_activity;LOG DE ACTIVIDAD;ACTIVITY LOG
+log_title_unclassified;SIN CLASIFICAR;UNCLASSIFIED
+btn_clear;LIMPIAR  ;CLEAR
+status_idle;En espera;Waiting
+status_files_count;{current} / {total} archivos;{current} / {total} files
+dialog_not_found_title;No encontrado;Not found
+dialog_not_found_msg;No se encuentra:\n{path};Not found:\n{path}
+dialog_created_title;Creado;Created
+dialog_created_msg;Archivo de ejemplo creado:\n{path}\n\nEdítalo con cualquier editor de texto.;Sample file created:\n{path}\n\nEdit it with any text editor.
+dialog_source_missing_title;Falta origen;Missing source
+dialog_source_missing_msg;Selecciona una carpeta origen.;Select a source folder.
+dialog_dest_missing_title;Falta destino;Missing destination
+dialog_dest_missing_msg;Selecciona una carpeta destino.;Select a destination folder.
+dialog_error_title;Error;Error
+dialog_source_not_found_msg;La carpeta origen no existe:\n{path};Source folder does not exist:\n{path}
+dialog_no_names_title;Sin nombres;No names
+dialog_no_names_msg;OCR activado pero no hay nombres cargados.\nLas imágenes irán al sistema de fechas.\n\n¿Continuar igualmente?;OCR is enabled but no names are loaded.\nImages will go through the date-based system.\n\nContinue anyway?
+folder_dialog_source;Carpeta origen;Source folder
+folder_dialog_dest;Carpeta destino;Destination folder
+file_dialog_names;Selecciona el archivo de nombres;Select the names file
+file_dialog_filter_text;Archivos de texto;Text files
+file_dialog_filter_all;Todos;All
+log_reloaded;ℹ Nombres recargados: {count} entradas;ℹ Names reloaded: {count} entries
+log_source;ℹ Origen: {path};ℹ Source: {path}
+log_dest;ℹ Destino: {path};ℹ Destination: {path}
+log_run_config;ℹ OCR: {ocr_state} · Nombres: {count} · Umbral: {threshold}%;ℹ OCR: {ocr_state} · Names: {count} · Threshold: {threshold}%
+state_enabled;activado;enabled
+state_disabled;desactivado;disabled
+log_cancelling;⛔ Cancelando…;⛔ Cancelling…
+dialog_no_files_title;Sin archivos;No files
+dialog_no_files_msg;No se encontraron archivos para procesar.;No files found to process.
+dialog_unexpected_error_title;Error inesperado;Unexpected error
+log_fatal_error;❌ ERROR FATAL: {error};❌ FATAL ERROR: {error}
+summary_window_title;Resumen del proceso;Process summary
+summary_header;▣  RESUMEN DEL PROCESO;▣  PROCESS SUMMARY
+summary_folders_title;  CARPETAS DE DESTINO;  DESTINATION FOLDERS
+summary_new;Nuevas;New
+summary_totals;Totales;Totals
+summary_no_folders;No se enviaron archivos a carpetas de nombres.;No files were sent to name folders.
+btn_close;  CERRAR  ;  CLOSE
+log_summary_line;  ✔ COMPLETADO — Total: {total} · OK: {ok} · Omitidos: {skipped} · Errores: {errors};  ✔ DONE — Total: {total} · OK: {ok} · Skipped: {skipped} · Errors: {errors}
+log_ocr_analyzing;🔍 OCR: {file};🔍 OCR: {file}
+log_ocr_reason;   ↳ {reason};   ↳ {reason}
+log_analyzed;📂 Analizado: {file};📂 Analyzed: {file}
+log_batch_ready;⏸ Lote {num}/{total} listo para revisión;⏸ Batch {num}/{total} ready for review
+log_review_cancelled;⛔ Revisión cancelada;⛔ Review cancelled
+log_moving;📂 Moviendo: {file};📂 Moving: {file}
+log_unclassified;⚠ {file} → [sin clasificar]{reason};⚠ {file} → [unclassified]{reason}
+log_ok_folder;✅ {file} → [{folder}] {dest};✅ {file} → [{folder}] {dest}
+log_ok;✅ {file} → {dest};✅ {file} → {dest}
+log_skipped;⏭ {file} (ya correcto);⏭ {file} (already correct)
+log_ignored;➖ {file} (ignorado);➖ {file} (ignored)
+log_error;❌ {file}: {reason};❌ {file}: {reason}
+ocr_names_empty;lista de nombres vacía;name list is empty
+ocr_error;error OCR: {error};OCR error: {error}
+ocr_no_text;sin texto OCR;no OCR text detected
+ocr_match;OCR: "{text}" → "{folder}" ({pct}% similitud);OCR: "{text}" → "{folder}" ({pct}% similarity)
+ocr_no_match;OCR: "{text}" sin match suficiente ({pct}% < {threshold}%);OCR: "{text}" no sufficient match ({pct}% < {threshold}%)
+review_window_title;Revisión — Lote {num} de {total};Review — Batch {num} of {total}
+review_header;⏸  REVISIÓN — LOTE {num} DE {total};⏸  REVIEW — BATCH {num} OF {total}
+review_file_count;{count} archivos en este lote;{count} files in this batch
+review_dest_folder;CARPETA DESTINO;DESTINATION FOLDER
+review_by_date;— Por fecha —;— By date —
+btn_confirm_batch;✔  CONFIRMAR Y MOVER ESTE LOTE;✔  CONFIRM AND MOVE THIS BATCH
+btn_cancel_all;⛔  CANCELAR TODO;⛔  CANCEL ALL
+review_hint;Cambia el desplegable antes de confirmar.;Change the dropdown before confirming.
+review_loading;Cargando…;Loading…
+review_ocr_detected;OCR DETECTADO;OCR DETECTED
+review_no_ocr_text;Sin texto OCR detectado;No OCR text detected
+review_no_preview;Sin previsualización\n{error};No preview\n{error}
+menu_settings;Configuración;Settings
+menu_language;Idioma;Language
+menu_theme;Tema;Theme
+menu_theme_restart_notice;El cambio de tema se aplicará al reiniciar la aplicación.;The theme change will apply after restarting the app.
+theme_green;Verde;Green
+theme_pink;Rosa;Pink
+theme_pro;Profesional;Professional

@@ -1,184 +1,184 @@
 """
 core/worker.py
-Hilo de trabajo. En modo revisión, analiza en lotes de N y pausa
-esperando confirmación antes de mover cada lote.
+Worker thread. In review mode, analyzes files in batches of N and pauses
+waiting for confirmation before moving each batch.
 """
 import threading
 from pathlib import Path
 from typing import Callable
 
-from core.renamer import procesar_archivo, EXTENSIONES_IGNORADAS
-from core.ocr_engine import es_imagen, buscar_nombre, CARPETA_SIN_CLASIFICAR
+from core.renamer import process_file, IGNORED_EXTENSIONS
+from core.ocr_engine import is_image, find_name, UNCLASSIFIED_FOLDER
+from core.i18n import tr
 
-CANCELAR_TODO = "__CANCELAR_TODO__"
-POR_FECHA     = "__POR_FECHA__"
-TAMANO_LOTE   = 8
-
-
-class ItemLote:
-    """Representa un archivo analizado pendiente de confirmación."""
-    def __init__(self, archivo: Path, nombre_sugerido: str | None, motivo: str):
-        self.archivo = archivo
-        self.nombre_sugerido = nombre_sugerido
-        self.motivo = motivo
-        # La carpeta final la elige el usuario en la ventana de revisión
-        self.carpeta_elegida: str | None = nombre_sugerido
+BY_DATE      = "__BY_DATE__"
+BATCH_SIZE   = 8
 
 
-class TrabajadorOrganizador(threading.Thread):
+class BatchItem:
+    """Represents an analyzed file pending confirmation."""
+    def __init__(self, file: Path, suggested_name: str | None, reason: str):
+        self.file = file
+        self.suggested_name = suggested_name
+        self.reason = reason
+        # The final folder is chosen by the user in the review window
+        self.chosen_folder: str | None = suggested_name
+
+
+class OrganizerWorker(threading.Thread):
 
     def __init__(
         self,
-        origen: Path,
-        destino: Path,
-        usar_ocr: bool,
-        usar_gpu: bool,
-        nombres: list[str],
-        modo_revision: bool,
-        on_progreso: Callable,
-        on_lote_listo: Callable,   # (lote: list[ItemLote]) → pausa hasta respuesta
-        on_fin: Callable,
+        source: Path,
+        dest: Path,
+        use_ocr: bool,
+        use_gpu: bool,
+        names: list[str],
+        review_mode: bool,
+        on_progress: Callable,
+        on_batch_ready: Callable,   # (batch: list[BatchItem]) -> pauses until a response
+        on_finish: Callable,
         on_error: Callable,
     ):
         super().__init__(daemon=True)
-        self.origen       = origen
-        self.destino      = destino
-        self.usar_ocr     = usar_ocr
-        self.usar_gpu     = usar_gpu
-        self.nombres      = nombres
-        self.modo_revision = modo_revision
-        self.on_progreso  = on_progreso
-        self.on_lote_listo = on_lote_listo
-        self.on_fin       = on_fin
-        self.on_error     = on_error
-        self._cancelado   = threading.Event()
-        self._lote_evento = threading.Event()
-        self._lote_confirmado: list[ItemLote] | None = None  # None = cancelar
+        self.source       = source
+        self.dest         = dest
+        self.use_ocr      = use_ocr
+        self.use_gpu      = use_gpu
+        self.names        = names
+        self.review_mode  = review_mode
+        self.on_progress   = on_progress
+        self.on_batch_ready = on_batch_ready
+        self.on_finish     = on_finish
+        self.on_error      = on_error
+        self._cancelled    = threading.Event()
+        self._batch_event  = threading.Event()
+        self._confirmed_batch: list[BatchItem] | None = None  # None = cancel
 
-    def cancelar(self):
-        self._cancelado.set()
-        self._lote_confirmado = None
-        self._lote_evento.set()
+    def cancel(self):
+        self._cancelled.set()
+        self._confirmed_batch = None
+        self._batch_event.set()
 
-    def confirmar_lote(self, items: list[ItemLote]):
-        """La UI llama aquí con los items (con carpeta_elegida ya actualizada)."""
-        self._lote_confirmado = items
-        self._lote_evento.set()
+    def confirm_batch(self, items: list[BatchItem]):
+        """The UI calls this with the items (chosen_folder already updated)."""
+        self._confirmed_batch = items
+        self._batch_event.set()
 
-    def cancelar_lote(self):
-        """La UI cancela todo desde la ventana de revisión."""
-        self._lote_confirmado = None
-        self._lote_evento.set()
+    def cancel_batch(self):
+        """The UI cancels everything from the review window."""
+        self._confirmed_batch = None
+        self._batch_event.set()
 
     def run(self):
         try:
-            archivos = [
-                p for p in self.origen.iterdir()
-                if p.is_file() and p.suffix.lower() not in EXTENSIONES_IGNORADAS
+            files = [
+                p for p in self.source.iterdir()
+                if p.is_file() and p.suffix.lower() not in IGNORED_EXTENSIONS
             ]
 
-            total = len(archivos)
+            total = len(files)
             if total == 0:
-                self.on_fin({"total": 0, "ok": 0, "omitidos": 0, "errores": 0})
+                self.on_finish({"total": 0, "ok": 0, "skipped": 0, "errors": 0})
                 return
 
-            stats = {"total": total, "ok": 0, "omitidos": 0, "errores": 0}
+            stats = {"total": total, "ok": 0, "skipped": 0, "errors": 0}
 
-            # Dividir en lotes
-            lotes = [archivos[i:i+TAMANO_LOTE]
-                     for i in range(0, len(archivos), TAMANO_LOTE)]
+            # Split into batches
+            batches = [files[i:i + BATCH_SIZE]
+                       for i in range(0, len(files), BATCH_SIZE)]
 
-            procesados = 0
-            for num_lote, lote_archivos in enumerate(lotes):
-                if self._cancelado.is_set():
+            processed = 0
+            for batch_num, batch_files in enumerate(batches):
+                if self._cancelled.is_set():
                     break
 
-                # ── Fase 1: analizar OCR el lote ──────────────────────────────
+                # ── Phase 1: run OCR on the batch ─────────────────────────
                 items = []
-                for archivo in lote_archivos:
-                    if self._cancelado.is_set():
+                for file in batch_files:
+                    if self._cancelled.is_set():
                         break
 
-                    procesados += 1
-                    nombre_carpeta = None
-                    motivo_ocr = ""
+                    processed += 1
+                    folder_name = None
+                    ocr_reason = ""
 
-                    if self.usar_ocr and self.nombres and es_imagen(archivo):
-                        self.on_progreso(procesados, total, f"🔍 OCR: {archivo.name}")
-                        nombre_carpeta, motivo_ocr = buscar_nombre(
-                            archivo, self.nombres, gpu=self.usar_gpu
+                    if self.use_ocr and self.names and is_image(file):
+                        self.on_progress(processed, total, tr("log_ocr_analyzing", file=file.name))
+                        folder_name, ocr_reason = find_name(
+                            file, self.names, gpu=self.use_gpu
                         )
-                        self.on_progreso(procesados, total, f"   ↳ {motivo_ocr}")
+                        self.on_progress(processed, total, tr("log_ocr_reason", reason=ocr_reason))
                     else:
-                        self.on_progreso(procesados, total, f"📂 Analizado: {archivo.name}")
+                        self.on_progress(processed, total, tr("log_analyzed", file=file.name))
 
-                    items.append(ItemLote(archivo, nombre_carpeta, motivo_ocr))
+                    items.append(BatchItem(file, folder_name, ocr_reason))
 
-                if self._cancelado.is_set():
+                if self._cancelled.is_set():
                     break
 
-                # ── Fase 2: en modo revisión, pausar y esperar confirmación ───
-                if self.modo_revision and items:
-                    n_total_lotes = len(lotes)
-                    self.on_progreso(procesados, total,
-                        f"⏸ Lote {num_lote+1}/{n_total_lotes} listo para revisión")
-                    self._lote_evento.clear()
-                    self._lote_confirmado = None
-                    self.on_lote_listo(items, num_lote + 1, n_total_lotes)
-                    self._lote_evento.wait()
+                # ── Phase 2: in review mode, pause and wait for confirmation ──
+                if self.review_mode and items:
+                    total_batches = len(batches)
+                    self.on_progress(processed, total,
+                        tr("log_batch_ready", num=batch_num + 1, total=total_batches))
+                    self._batch_event.clear()
+                    self._confirmed_batch = None
+                    self.on_batch_ready(items, batch_num + 1, total_batches)
+                    self._batch_event.wait()
 
-                    if self._lote_confirmado is None:
-                        self.on_progreso(procesados, total, "⛔ Revisión cancelada")
+                    if self._confirmed_batch is None:
+                        self.on_progress(processed, total, tr("log_review_cancelled"))
                         break
 
-                    items = self._lote_confirmado
+                    items = self._confirmed_batch
 
-                # ── Fase 3: mover archivos del lote ───────────────────────────
+                # ── Phase 3: move the batch's files ───────────────────────
                 for item in items:
-                    if self._cancelado.is_set():
+                    if self._cancelled.is_set():
                         break
 
-                    # Resolver carpeta final
-                    carpeta = item.carpeta_elegida
-                    if carpeta == POR_FECHA:
-                        carpeta = None
-                    elif carpeta == CARPETA_SIN_CLASIFICAR:
-                        pass  # se pasa tal cual
+                    # Resolve final folder
+                    folder = item.chosen_folder
+                    if folder == BY_DATE:
+                        folder = None
+                    elif folder == UNCLASSIFIED_FOLDER:
+                        pass  # passed through as-is
 
-                    self.on_progreso(procesados, total, f"📂 Moviendo: {item.archivo.name}")
+                    self.on_progress(processed, total, tr("log_moving", file=item.file.name))
                     try:
-                        resultado = procesar_archivo(item.archivo, self.destino, carpeta)
+                        result = process_file(item.file, self.dest, folder)
                     except Exception as exc:
-                        resultado = {"estado": "error",
-                                     "archivo": item.archivo.name,
-                                     "motivo": str(exc)}
+                        result = {"status": "error",
+                                  "file": item.file.name,
+                                  "reason": str(exc)}
 
-                    estado = resultado.get("estado", "error")
-                    motivo_ocr = item.motivo
-                    if estado == "ok":
+                    status = result.get("status", "error")
+                    ocr_reason = item.reason
+                    if status == "ok":
                         stats["ok"] += 1
-                        destino_rel = resultado.get("destino", "?")
-                        carp = resultado.get("nombre_ocr")
-                        if carp == CARPETA_SIN_CLASIFICAR:
-                            razon = f" · {motivo_ocr}" if motivo_ocr else ""
-                            msg = f"⚠ {resultado['archivo']} → [sin clasificar]{razon}"
-                        elif carp:
-                            msg = f"✅ {resultado['archivo']} → [{carp}] {destino_rel}"
+                        rel_dest = result.get("destination", "?")
+                        folder_used = result.get("ocr_name")
+                        if folder_used == UNCLASSIFIED_FOLDER:
+                            reason_suffix = f" · {ocr_reason}" if ocr_reason else ""
+                            msg = tr("log_unclassified", file=result["file"], reason=reason_suffix)
+                        elif folder_used:
+                            msg = tr("log_ok_folder", file=result["file"], folder=folder_used, dest=rel_dest)
                         else:
-                            msg = f"✅ {resultado['archivo']} → {destino_rel}"
-                    elif estado == "omitido":
-                        stats["omitidos"] += 1
-                        msg = f"⏭ {resultado['archivo']} (ya correcto)"
-                    elif estado == "ignorado":
-                        stats["omitidos"] += 1
-                        msg = f"➖ {resultado['archivo']} (ignorado)"
+                            msg = tr("log_ok", file=result["file"], dest=rel_dest)
+                    elif status == "skipped":
+                        stats["skipped"] += 1
+                        msg = tr("log_skipped", file=result["file"])
+                    elif status == "ignored":
+                        stats["skipped"] += 1
+                        msg = tr("log_ignored", file=result["file"])
                     else:
-                        stats["errores"] += 1
-                        msg = f"❌ {resultado['archivo']}: {resultado.get('motivo','?')}"
+                        stats["errors"] += 1
+                        msg = tr("log_error", file=result["file"], reason=result.get("reason", "?"))
 
-                    self.on_progreso(procesados, total, msg)
+                    self.on_progress(processed, total, msg)
 
-            self.on_fin(stats)
+            self.on_finish(stats)
 
         except Exception as exc:
             self.on_error(str(exc))

@@ -1,399 +1,317 @@
 """
 ui/widgets.py
-Componentes reutilizables con estilo industrial oscuro.
+Reusable CustomTkinter components, styled from the active PinkCat Design
+System theme (ui/theme.py). No literal UI text lives here — every visible
+string is passed in by the caller (see ui/app.py / ui/revisor.py), which is
+what lets language switching stay a screen-level concern.
 """
-import tkinter as tk
-from tkinter import ttk
-from ui.theme import *
+from datetime import datetime
+
+import customtkinter as ctk
+
+from ui.theme import (
+    BG, PANEL, CARD, CARD_HOVER, BORDER, ACCENT, ACCENT_DIM,
+    SUCCESS, DANGER, WARNING, TEXT, TEXT_DIM, TEXT_MUTED,
+    RADIUS_BTN, RADIUS_CARD, FONT_UI, FONT_UI_SM, FONT_MONO, FONT_MONO_SM,
+    FONT_BADGE, PAD, LOG_COLORS, NAME_PALETTE,
+)
 
 
-# ── Botón estilizado ───────────────────────────────────────────────────────────
+def _darken(hex_color: str, amount: float = 0.35) -> str:
+    """Returns `hex_color` blended toward black by `amount` (0-1)."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    r, g, b = (int(c * (1 - amount)) for c in (r, g, b))
+    return f"#{r:02x}{g:02x}{b:02x}"
 
-class BotonAccion(tk.Frame):
-    """Botón con estilo flat oscuro y efecto hover."""
 
-    def __init__(self, parent, texto, comando=None, estilo="normal", ancho=None, **kwargs):
-        super().__init__(parent, bg=BG_BASE, **kwargs)
+# ── Action button (Add/Edit/Delete state pattern, Design System §7) ───────────
 
-        colores = {
-            "normal":   (BG_CARD, FG_PRIMARY, BG_HOVER),
-            "primario": (ACCENT_DIM, ACCENT, ACCENT_DARK),
-            "peligro":  (RED_DIM, RED, "#3d1515"),
-            "exito":    (GREEN_DIM, GREEN, "#1a3d2a"),
-        }
-        self._bg, self._fg, self._hover = colores.get(estilo, colores["normal"])
-        self._comando = comando
+_BUTTON_STYLES = {
+    # style: (enabled fg_color, hover_color, text_color)
+    "normal":  (PANEL, CARD_HOVER, TEXT),
+    "primary": (ACCENT_DIM, ACCENT, TEXT),
+    "danger":  (_darken(DANGER), DANGER, "#ffffff"),
+    "success": (_darken(SUCCESS), SUCCESS, "#ffffff"),
+}
 
-        kw = {"width": ancho} if ancho else {}
-        self._btn = tk.Label(
-            self,
-            text=texto,
-            bg=self._bg,
-            fg=self._fg,
-            font=FONT_UI,
-            padx=14,
-            pady=6,
-            cursor="hand2",
-            relief="flat",
-            **kw,
+
+class ActionButton(ctk.CTkButton):
+    """Flat action button with the shared enabled/disabled state pattern."""
+
+    def __init__(self, parent, text, command=None, style="normal", width=140, **kwargs):
+        fg, hover, fg_text = _BUTTON_STYLES.get(style, _BUTTON_STYLES["normal"])
+        self._fg, self._hover, self._fg_text = fg, hover, fg_text
+        super().__init__(
+            parent, text=text, command=command, width=width,
+            fg_color=fg, hover_color=hover, text_color=fg_text,
+            text_color_disabled=TEXT_MUTED,
+            corner_radius=RADIUS_BTN, font=FONT_UI,
+            **kwargs,
         )
-        self._btn.pack(fill="x")
 
-        self._btn.bind("<Enter>", lambda e: self._btn.config(bg=self._hover))
-        self._btn.bind("<Leave>", lambda e: self._btn.config(bg=self._bg))
-        self._btn.bind("<Button-1>", self._click)
+    def set_enabled(self, enabled: bool):
+        self.configure(state="normal" if enabled else "disabled")
 
-    def _click(self, event):
-        if self._comando:
-            self._comando()
-
-    def config_texto(self, texto):
-        self._btn.config(text=texto)
-
-    def habilitar(self, activo: bool):
-        if activo:
-            self._btn.config(fg=self._fg, cursor="hand2")
-            self._btn.bind("<Button-1>", self._click)
-        else:
-            self._btn.config(fg=FG_MUTED, cursor="arrow")
-            self._btn.unbind("<Button-1>")
+    def set_text(self, text: str):
+        self.configure(text=text)
 
 
-# ── Entrada de ruta ────────────────────────────────────────────────────────────
+# ── Path entry: label + text field + browse button ─────────────────────────────
 
-class EntradaRuta(tk.Frame):
-    """Campo de texto + botón examinar para rutas de carpeta."""
+class PathEntry(ctk.CTkFrame):
+    """Label + text entry + browse button, for folder/file paths."""
 
-    def __init__(self, parent, etiqueta, placeholder="", comando_examinar=None, **kwargs):
-        super().__init__(parent, bg=BG_PANEL, **kwargs)
+    def __init__(self, parent, label, placeholder="", browse_command=None, **kwargs):
+        super().__init__(parent, fg_color=PANEL, **kwargs)
 
-        # Etiqueta
-        tk.Label(self, text=etiqueta.upper(), font=FONT_UI_SM,
-                 bg=BG_PANEL, fg=FG_SECONDARY).pack(anchor="w", pady=(0, 3))
+        self._label = ctk.CTkLabel(self, text=label.upper(), font=FONT_UI_SM,
+                                    text_color=TEXT_DIM, anchor="w")
+        self._label.pack(fill="x", pady=(0, 3))
 
-        # Contenedor input + botón
-        fila = tk.Frame(self, bg=BG_INPUT, highlightbackground=BORDER,
-                        highlightthickness=1)
-        fila.pack(fill="x")
+        row = ctk.CTkFrame(self, fg_color=BG, corner_radius=RADIUS_BTN,
+                            border_color=BORDER, border_width=1)
+        row.pack(fill="x")
 
-        self.var = tk.StringVar()
-        self._entry = tk.Entry(
-            fila,
-            textvariable=self.var,
-            font=FONT_MONO,
-            bg=BG_INPUT,
-            fg=FG_PRIMARY,
-            insertbackground=ACCENT,
-            relief="flat",
-            bd=0,
+        self.var = ctk.StringVar()
+        self._entry = ctk.CTkEntry(
+            row, textvariable=self.var, font=FONT_MONO,
+            placeholder_text=placeholder,
+            fg_color="transparent", text_color=TEXT,
+            border_width=0,
         )
-        self._entry.pack(side="left", fill="x", expand=True, padx=8, pady=7)
+        self._entry.pack(side="left", fill="x", expand=True, padx=8, pady=6)
 
-        if placeholder:
-            self._set_placeholder(placeholder)
-
-        if comando_examinar:
-            btn = tk.Label(
-                fila,
-                text="  ···  ",
-                font=("Consolas", 9, "bold"),
-                bg=ACCENT_DIM,
-                fg=ACCENT,
-                cursor="hand2",
-                pady=7,
-                padx=4,
+        if browse_command:
+            self._browse_btn = ctk.CTkButton(
+                row, text="···", width=36, command=browse_command,
+                fg_color=ACCENT_DIM, hover_color=ACCENT, text_color=ACCENT,
+                corner_radius=RADIUS_BTN, font=("Consolas", 11, "bold"),
             )
-            btn.pack(side="right")
-            btn.bind("<Button-1>", lambda e: comando_examinar())
-            btn.bind("<Enter>", lambda e: btn.config(bg=ACCENT, fg=BG_BASE))
-            btn.bind("<Leave>", lambda e: btn.config(bg=ACCENT_DIM, fg=ACCENT))
+            self._browse_btn.pack(side="right", padx=(0, 4), pady=4)
 
-    def _set_placeholder(self, texto):
-        if not self.var.get():
-            self._entry.insert(0, texto)
-            self._entry.config(fg=FG_MUTED)
+    def set_label(self, text: str):
+        self._label.configure(text=text.upper())
 
-        def on_focus_in(e):
-            if self._entry.get() == texto:
-                self._entry.delete(0, "end")
-                self._entry.config(fg=FG_PRIMARY)
-
-        def on_focus_out(e):
-            if not self._entry.get():
-                self._entry.insert(0, texto)
-                self._entry.config(fg=FG_MUTED)
-
-        self._entry.bind("<FocusIn>", on_focus_in)
-        self._entry.bind("<FocusOut>", on_focus_out)
+    def set_placeholder(self, text: str):
+        self._entry.configure(placeholder_text=text)
 
     def get(self) -> str:
         return self.var.get()
 
-    def set(self, valor: str):
-        self.var.set(valor)
-        self._entry.config(fg=FG_PRIMARY)
+    def set(self, value: str):
+        self.var.set(value)
 
 
-# ── Panel de Log ───────────────────────────────────────────────────────────────
+# ── Activity log panel ──────────────────────────────────────────────────────────
 
-class PanelLog(tk.Frame):
-    """Panel de texto con scroll y coloreado por tipo de mensaje."""
+class LogPanel(ctk.CTkFrame):
+    """Scrollable text panel with per-message-type coloring."""
 
-    def __init__(self, parent, titulo="LOG DE ACTIVIDAD", color_cabecera=None, **kwargs):
-        super().__init__(parent, bg=BG_BASE, **kwargs)
-        _color = color_cabecera or ACCENT
+    def __init__(self, parent, title="", header_color=None, on_clear_click=None, **kwargs):
+        super().__init__(parent, fg_color=BG, **kwargs)
+        color = header_color or ACCENT
 
-        # Cabecera
-        cabecera = tk.Frame(self, bg=BG_PANEL, pady=5)
-        cabecera.pack(fill="x")
-        tk.Label(cabecera, text=f"  {titulo}", font=("Consolas", 9, "bold"),
-                 bg=BG_PANEL, fg=_color).pack(side="left", padx=8)
-        self._btn_limpiar = tk.Label(
-            cabecera, text="LIMPIAR  ", font=FONT_UI_SM,
-            bg=BG_PANEL, fg=FG_MUTED, cursor="hand2"
+        header = ctk.CTkFrame(self, fg_color=PANEL, height=32)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        self._title_label = ctk.CTkLabel(header, text=f"  {title}", font=("Consolas", 12, "bold"),
+                                          text_color=color, anchor="w")
+        self._title_label.pack(side="left", padx=8)
+        self._clear_label = ctk.CTkLabel(header, text="", font=FONT_UI_SM,
+                                          text_color=TEXT_MUTED, cursor="hand2")
+        self._clear_label.pack(side="right", padx=4)
+        self._clear_label.bind("<Button-1>", lambda e: self._on_clear())
+        self._on_clear_click = on_clear_click
+
+        container = ctk.CTkFrame(self, fg_color=BG, border_color=BORDER, border_width=1)
+        container.pack(fill="both", expand=True)
+
+        self._text = ctk.CTkTextbox(
+            container, font=FONT_MONO_SM, fg_color=BG, text_color=TEXT,
+            wrap="word", activate_scrollbars=True, state="disabled",
         )
-        self._btn_limpiar.pack(side="right", padx=4)
-        self._btn_limpiar.bind("<Button-1>", lambda e: self.limpiar())
-        self._btn_limpiar.bind("<Enter>", lambda e: self._btn_limpiar.config(fg=ACCENT))
-        self._btn_limpiar.bind("<Leave>", lambda e: self._btn_limpiar.config(fg=FG_MUTED))
+        self._text.pack(fill="both", expand=True, padx=1, pady=1)
 
-        # Área de texto
-        contenedor = tk.Frame(self, bg=BG_BASE, highlightbackground=BORDER,
-                              highlightthickness=1)
-        contenedor.pack(fill="both", expand=True)
+        for emoji, emoji_color in LOG_COLORS.items():
+            self._text.tag_config(emoji, foreground=emoji_color)
+        self._text.tag_config("timestamp", foreground=TEXT_MUTED)
+        self._text.tag_config("separator", foreground=BORDER)
+        self._text.tag_config("summary", foreground=ACCENT)
+        self._text.tag_config("unclassified", foreground=DANGER)
+        self._text.tag_config("unclassified_pct", foreground=ACCENT)
 
-        self._texto = tk.Text(
-            contenedor,
-            font=FONT_MONO_SM,
-            bg=BG_BASE,
-            fg=FG_PRIMARY,
-            relief="flat",
-            bd=0,
-            padx=10,
-            pady=8,
-            wrap="word",
-            spacing1=4,
-            spacing3=4,
-            state="disabled",
-            cursor="arrow",
-        )
-        scroll_v = tk.Scrollbar(contenedor, orient="vertical",
-                                command=self._texto.yview,
-                                bg=BG_CARD, troughcolor=BG_BASE,
-                                activebackground=ACCENT, relief="flat", bd=0, width=10)
-        self._texto.config(yscrollcommand=scroll_v.set)
+    def set_clear_label_text(self, text: str):
+        self._clear_label.configure(text=text)
 
-        scroll_v.pack(side="right", fill="y")
-        self._texto.pack(fill="both", expand=True)
+    def _on_clear(self):
+        self.clear()
+        if self._on_clear_click:
+            self._on_clear_click()
 
-        # Configurar tags de color
-        for emoji, color in LOG_COLORS.items():
-            self._texto.tag_config(emoji, foreground=color)
-        self._texto.tag_config("timestamp", foreground=FG_MUTED)
-        self._texto.tag_config("separador", foreground=BORDER_ACCENT)
-        self._texto.tag_config("resumen", foreground=ACCENT, font=("Consolas", 9, "bold"))
-        self._texto.tag_config("sin_clasificar", foreground=RED, background=RED_DIM)
-        self._texto.tag_config("sin_clasificar_pct", foreground=ACCENT, background=RED_DIM, font=("Consolas", 8, "bold"))
+    def name_color(self, name: str) -> str:
+        """Always returns the same color for the same detected-name folder."""
+        idx = hash(name.lower()) % len(NAME_PALETTE)
+        return NAME_PALETTE[idx]
 
-    # Paleta de colores para nombres de carpeta (HSL bien distribuidos)
-    _PALETA = [
-        "#e06c75", "#e5c07b", "#98c379", "#56b6c2",
-        "#61afef", "#c678dd", "#d19a66", "#be5046",
-        "#2bbac5", "#a9d4a0", "#f0a500", "#7f84be",
-    ]
-
-    def _color_para_nombre(self, nombre: str) -> str:
-        """Devuelve siempre el mismo color para el mismo nombre."""
-        idx = hash(nombre.lower()) % len(self._PALETA)
-        return self._PALETA[idx]
-
-    def _asegurar_tag_nombre(self, nombre: str):
-        """Crea el tag de color para este nombre si no existe."""
-        tag = f"nombre_{nombre}"
-        try:
-            self._texto.tag_cget(tag, "foreground")
-        except Exception:
-            color = self._color_para_nombre(nombre)
-            self._texto.tag_config(tag, foreground=color, font=("Consolas", 8, "bold"))
+    def _ensure_name_tag(self, name: str):
+        tag = f"name_{name}"
+        if tag not in self._text.tag_names():
+            self._text.tag_config(tag, foreground=self.name_color(name))
         return tag
 
-    def agregar_con_nombre(self, mensaje: str, nombre: str):
-        """
-        Inserta la línea del log resaltando [nombre] con su color propio.
-        Busca el patrón [nombre] dentro del mensaje y lo colorea.
-        """
-        from datetime import datetime
-        hora = datetime.now().strftime("%H:%M:%S")
-        tag_nombre = self._asegurar_tag_nombre(nombre)
-        patron = f"[{nombre}]"
+    def add_with_name(self, message: str, name: str):
+        """Inserts the log line highlighting [name] with its own color."""
+        hour = datetime.now().strftime("%H:%M:%S")
+        name_tag = self._ensure_name_tag(name)
+        pattern = f"[{name}]"
 
-        self._texto.config(state="normal")
-        self._texto.insert("end", f"[{hora}] ", "timestamp")
+        self._text.configure(state="normal")
+        self._text.insert("end", f"[{hour}] ", "timestamp")
 
-        idx = mensaje.find(patron)
+        idx = message.find(pattern)
         if idx >= 0:
-            self._texto.insert("end", mensaje[:idx], "✅")
-            self._texto.insert("end", patron, tag_nombre)
-            self._texto.insert("end", mensaje[idx + len(patron):] + "\n", "✅")
+            self._text.insert("end", message[:idx], "✅")
+            self._text.insert("end", pattern, name_tag)
+            self._text.insert("end", message[idx + len(pattern):] + "\n", "✅")
         else:
-            self._texto.insert("end", mensaje + "\n", "✅")
+            self._text.insert("end", message + "\n", "✅")
 
-        self._texto.see("end")
-        self._texto.config(state="disabled")
+        self._text.see("end")
+        self._text.configure(state="disabled")
 
-    def _detectar_tag(self, mensaje: str) -> str:
+    def _detect_tag(self, message: str) -> str:
         for emoji in LOG_COLORS:
-            if mensaje.startswith(emoji):
+            if message.startswith(emoji):
                 return emoji
         return ""
 
-    def agregar(self, mensaje: str, tag: str | None = None):
-        """Añade una línea al log con coloración automática."""
-        from datetime import datetime
-        hora = datetime.now().strftime("%H:%M:%S")
+    def add(self, message: str, tag: str | None = None):
+        """Adds a line to the log with automatic coloring."""
+        hour = datetime.now().strftime("%H:%M:%S")
 
-        self._texto.config(state="normal")
-        self._texto.insert("end", f"[{hora}] ", "timestamp")
+        self._text.configure(state="normal")
+        self._text.insert("end", f"[{hour}] ", "timestamp")
 
-        t = tag or self._detectar_tag(mensaje)
+        t = tag or self._detect_tag(message)
         if t:
-            self._texto.insert("end", mensaje + "\n", t)
+            self._text.insert("end", message + "\n", t)
         else:
-            self._texto.insert("end", mensaje + "\n")
+            self._text.insert("end", message + "\n")
 
-        self._texto.see("end")
-        self._texto.config(state="disabled")
+        self._text.see("end")
+        self._text.configure(state="disabled")
 
-    def separador(self):
-        self._texto.config(state="normal")
-        self._texto.insert("end", "─" * 72 + "\n", "separador")
-        self._texto.see("end")
-        self._texto.config(state="disabled")
+    def separator(self):
+        self._text.configure(state="normal")
+        self._text.insert("end", "─" * 72 + "\n", "separator")
+        self._text.see("end")
+        self._text.configure(state="disabled")
 
-    def resumen(self, texto: str):
-        self._texto.config(state="normal")
-        self._texto.insert("end", texto + "\n", "resumen")
-        self._texto.see("end")
-        self._texto.config(state="disabled")
+    def summary(self, text: str):
+        self._text.configure(state="normal")
+        self._text.insert("end", text + "\n", "summary")
+        self._text.see("end")
+        self._text.configure(state="disabled")
 
-    def agregar_sin_clasificar(self, mensaje: str):
-        """Añade línea en rojo; la parte con porcentaje (XX% < YY%) en ámbar."""
+    def add_unclassified(self, message: str):
+        """Adds a line in red; the percentage part (XX% < YY%) in amber."""
         import re
-        from datetime import datetime
-        hora = datetime.now().strftime("%H:%M:%S")
-        self._texto.config(state="normal")
-        self._texto.insert("end", f"[{hora}] ", "timestamp")
+        hour = datetime.now().strftime("%H:%M:%S")
+        self._text.configure(state="normal")
+        self._text.insert("end", f"[{hour}] ", "timestamp")
 
-        # Separar el porcentaje final: "(44% < 72%)"
-        m = re.search(r"(\(\d+% [<>] \d+%\))", mensaje)
+        # Split off the trailing percentage: "(44% < 72%)"
+        m = re.search(r"(\(\d+% [<>] \d+%\))", message)
         if m:
-            antes = mensaje[:m.start()]
-            pct   = m.group(1)
-            resto = mensaje[m.end():]
-            self._texto.insert("end", antes, "sin_clasificar")
-            self._texto.insert("end", pct, "sin_clasificar_pct")
-            self._texto.insert("end", resto + "\n", "sin_clasificar")
+            before = message[:m.start()]
+            pct    = m.group(1)
+            after  = message[m.end():]
+            self._text.insert("end", before, "unclassified")
+            self._text.insert("end", pct, "unclassified_pct")
+            self._text.insert("end", after + "\n", "unclassified")
         else:
-            self._texto.insert("end", mensaje + "\n", "sin_clasificar")
+            self._text.insert("end", message + "\n", "unclassified")
 
-        self._texto.see("end")
-        self._texto.config(state="disabled")
+        self._text.see("end")
+        self._text.configure(state="disabled")
 
-    def limpiar(self):
-        self._texto.config(state="normal")
-        self._texto.delete("1.0", "end")
-        self._texto.config(state="disabled")
+    def clear(self):
+        self._text.configure(state="normal")
+        self._text.delete("1.0", "end")
+        self._text.configure(state="disabled")
 
 
-# ── Barra de progreso custom ───────────────────────────────────────────────────
+# ── Progress panel ──────────────────────────────────────────────────────────────
 
-class BarraProgreso(tk.Frame):
-    """Barra de progreso dibujada en Canvas con estilo industrial."""
+class ProgressPanel(ctk.CTkFrame):
+    """Status label + progress bar + percentage/count labels."""
 
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, bg=BG_PANEL, **kwargs)
+    def __init__(self, parent, idle_text="", **kwargs):
+        super().__init__(parent, fg_color=PANEL, **kwargs)
+        self._idle_text = idle_text
 
-        # Etiqueta de estado
-        self._lbl_estado = tk.Label(self, text="En espera", font=FONT_UI_SM,
-                                    bg=BG_PANEL, fg=FG_SECONDARY, anchor="w")
-        self._lbl_estado.pack(fill="x", padx=10, pady=(6, 2))
+        self._status_label = ctk.CTkLabel(self, text=idle_text, font=FONT_UI_SM,
+                                           text_color=TEXT_DIM, anchor="w")
+        self._status_label.pack(fill="x", padx=10, pady=(8, 4))
 
-        # Canvas de la barra
-        self._canvas = tk.Canvas(self, height=14, bg=BG_CARD,
-                                 highlightthickness=0, relief="flat")
-        self._canvas.pack(fill="x", padx=10, pady=(0, 2))
+        self._bar = ctk.CTkProgressBar(self, fg_color=CARD, progress_color=ACCENT,
+                                        corner_radius=RADIUS_BTN, height=14)
+        self._bar.set(0)
+        self._bar.pack(fill="x", padx=10, pady=(0, 4))
 
-        # Porcentaje
-        fila = tk.Frame(self, bg=BG_PANEL)
-        fila.pack(fill="x", padx=10, pady=(0, 6))
-        self._lbl_pct = tk.Label(fila, text="0%", font=FONT_BADGE,
-                                 bg=BG_PANEL, fg=ACCENT, width=5, anchor="w")
-        self._lbl_pct.pack(side="left")
-        self._lbl_conteo = tk.Label(fila, text="0 / 0 archivos",
-                                    font=FONT_UI_SM, bg=BG_PANEL, fg=FG_MUTED, anchor="e")
-        self._lbl_conteo.pack(side="right")
+        row = ctk.CTkFrame(self, fg_color=PANEL)
+        row.pack(fill="x", padx=10, pady=(0, 8))
+        self._pct_label = ctk.CTkLabel(row, text="0%", font=FONT_BADGE,
+                                        text_color=ACCENT, anchor="w")
+        self._pct_label.pack(side="left")
+        self._count_label = ctk.CTkLabel(row, text="", font=FONT_UI_SM,
+                                          text_color=TEXT_MUTED, anchor="e")
+        self._count_label.pack(side="right")
 
-        self._valor = 0.0
-        self._canvas.bind("<Configure>", self._redibujar)
+    def set_count_format(self, fmt: str):
+        """`fmt` is a template already formatted by the caller (i18n)."""
+        self._count_label.configure(text=fmt)
 
-    def actualizar(self, valor: float, actual: int = 0, total: int = 0, estado: str = ""):
-        """valor entre 0.0 y 1.0"""
-        self._valor = max(0.0, min(1.0, valor))
-        pct = int(self._valor * 100)
-        self._lbl_pct.config(text=f"{pct}%")
-        if total:
-            self._lbl_conteo.config(text=f"{actual} / {total} archivos")
-        if estado:
-            # Truncar texto largo para que quepa en la etiqueta
-            max_chars = 80
-            texto = estado if len(estado) <= max_chars else estado[:max_chars] + "…"
-            self._lbl_estado.config(text=texto)
-        self._redibujar()
-
-    def _redibujar(self, event=None):
-        w = self._canvas.winfo_width()
-        h = 14
-        self._canvas.delete("all")
-
-        # Fondo
-        self._canvas.create_rectangle(0, 0, w, h, fill=BG_CARD, outline="")
-
-        # Relleno animado
-        fill_w = int(w * self._valor)
-        if fill_w > 0:
-            # Gradiente simulado con dos rectángulos
-            self._canvas.create_rectangle(0, 0, fill_w, h, fill=ACCENT_DARK, outline="")
-            self._canvas.create_rectangle(0, 0, fill_w, h // 2,
-                                          fill=ACCENT, outline="", stipple="gray50")
-
-        # Borde
-        self._canvas.create_rectangle(0, 0, w - 1, h - 1,
-                                      outline=BORDER_ACCENT, fill="")
+    def update(self, value: float, current: int = 0, total: int = 0, status: str = ""):
+        """`value` between 0.0 and 1.0."""
+        value = max(0.0, min(1.0, value))
+        self._bar.set(value)
+        self._pct_label.configure(text=f"{int(value * 100)}%")
+        if status:
+            max_chars = 90
+            text = status if len(status) <= max_chars else status[:max_chars] + "…"
+            self._status_label.configure(text=text)
 
     def reset(self):
-        self._valor = 0.0
-        self._lbl_pct.config(text="0%")
-        self._lbl_conteo.config(text="0 / 0 archivos")
-        self._lbl_estado.config(text="En espera")
-        self._redibujar()
+        self._bar.set(0)
+        self._pct_label.configure(text="0%")
+        self._status_label.configure(text=self._idle_text)
+
+    def set_idle_text(self, text: str):
+        self._idle_text = text
 
 
-# ── Badge / etiqueta de stat ───────────────────────────────────────────────────
+# ── Stat badge ───────────────────────────────────────────────────────────────────
 
-class BadgeStat(tk.Frame):
-    """Muestra un número grande con etiqueta pequeña."""
+class StatBadge(ctk.CTkFrame):
+    """Big number with a small label underneath."""
 
-    def __init__(self, parent, etiqueta, color=FG_PRIMARY, **kwargs):
-        super().__init__(parent, bg=BG_CARD, **kwargs)
-        self._color = color
-        self._var = tk.StringVar(value="0")
+    def __init__(self, parent, label, color=TEXT, **kwargs):
+        super().__init__(parent, fg_color=CARD, corner_radius=RADIUS_CARD, **kwargs)
+        self._var = ctk.StringVar(value="0")
 
-        tk.Label(self, textvariable=self._var,
-                 font=("Consolas", 22, "bold"),
-                 bg=BG_CARD, fg=color).pack(pady=(8, 0))
-        tk.Label(self, text=etiqueta.upper(),
-                 font=("Segoe UI", 7),
-                 bg=BG_CARD, fg=FG_MUTED).pack(pady=(0, 8))
+        ctk.CTkLabel(self, textvariable=self._var, font=("Consolas", 24, "bold"),
+                     text_color=color).pack(pady=(10, 0))
+        self._label_widget = ctk.CTkLabel(self, text=label.upper(), font=("Segoe UI", 10),
+                                           text_color=TEXT_MUTED)
+        self._label_widget.pack(pady=(0, 10))
 
-    def set(self, valor: int):
-        self._var.set(str(valor))
+    def set_label(self, text: str):
+        self._label_widget.configure(text=text.upper())
+
+    def get(self) -> int:
+        return int(self._var.get())
+
+    def set(self, value: int):
+        self._var.set(str(value))

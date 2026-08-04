@@ -1,23 +1,25 @@
 """
 core/ocr_engine.py
-Motor OCR basado en EasyOCR con fuzzy matching contra lista de nombres.
+OCR engine based on EasyOCR with fuzzy matching against the names list.
 """
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
 
-# Extensiones de imagen soportadas
-EXTENSIONES_IMAGEN = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif",
-                      ".webp", ".jfif", ".heic", ".gif"}
+from core.i18n import tr
 
-# Carpeta de destino cuando hay texto OCR pero no encaja con ningún nombre
-CARPETA_SIN_CLASIFICAR = "_Sin clasificar"
+# Supported image extensions
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif",
+                     ".webp", ".jfif", ".heic", ".gif"}
 
-# Umbral mínimo de similitud para aceptar un match (0.0-1.0)
-UMBRAL_SIMILITUD = 0.72
+# Destination folder when OCR finds text but it doesn't match any name
+UNCLASSIFIED_FOLDER = "_Unclassified"
+
+# Minimum similarity threshold to accept a match (0.0-1.0)
+SIMILARITY_THRESHOLD = 0.72
 
 _reader_cache = None
-_CHARS_INVALIDOS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_INVALID_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 def _get_reader(gpu: bool = False):
@@ -28,95 +30,96 @@ def _get_reader(gpu: bool = False):
     return _reader_cache
 
 
-def es_imagen(ruta: Path) -> bool:
-    return ruta.suffix.lower() in EXTENSIONES_IMAGEN
+def is_image(path: Path) -> bool:
+    return path.suffix.lower() in IMAGE_EXTENSIONS
 
 
-def _cargar_imagen(ruta: Path):
+def _load_image(path: Path):
     """
-    Carga la imagen como numpy array via PIL, evitando el problema de
-    cv2.imread que devuelve None en .jfif y otros formatos en Windows.
+    Loads the image as a numpy array via PIL, avoiding the issue where
+    cv2.imread returns None for .jfif and other formats on Windows.
     """
     import numpy as np
     from PIL import Image
-    img = Image.open(ruta).convert("RGB")
+    img = Image.open(path).convert("RGB")
     return np.array(img)
 
 
-def extraer_texto(ruta: Path, gpu: bool = False) -> tuple[list[str], str]:
+def extract_text(path: Path, gpu: bool = False) -> tuple[list[str], str]:
     """
-    Devuelve (lista_de_textos, error).
-    error es "" si todo fue bien, o el mensaje de excepción si falló.
+    Returns (list_of_texts, error).
+    error is "" if everything went fine, or the exception message if it failed.
     """
-    if not es_imagen(ruta) or not ruta.exists():
+    if not is_image(path) or not path.exists():
         return [], ""
     try:
         reader = _get_reader(gpu=gpu)
-        img = _cargar_imagen(ruta)
-        resultados = reader.readtext(img, detail=0)
-        return [r.strip() for r in resultados if r.strip()], ""
+        img = _load_image(path)
+        results = reader.readtext(img, detail=0)
+        return [r.strip() for r in results if r.strip()], ""
     except Exception as e:
         return [], str(e)
 
 
-def _similitud(a: str, b: str) -> float:
-    """Ratio de similitud entre dos strings (case-insensitive)."""
+def _similarity(a: str, b: str) -> float:
+    """Similarity ratio between two strings (case-insensitive)."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
-def _mejor_match(texto_ocr: str, nombres: list[str]) -> tuple[str | None, float]:
+def _best_match(ocr_text: str, names: list[str]) -> tuple[str | None, float]:
     """
-    Compara texto_ocr contra cada nombre de la lista y devuelve
-    (mejor_nombre, score). Score entre 0.0 y 1.0.
+    Compares ocr_text against every name in the list and returns
+    (best_name, score). Score between 0.0 and 1.0.
     """
-    mejor = None
-    mejor_score = 0.0
-    for nombre in nombres:
-        score = _similitud(texto_ocr, nombre)
-        if score > mejor_score:
-            mejor_score = score
-            mejor = nombre
-    return mejor, mejor_score
+    best = None
+    best_score = 0.0
+    for name in names:
+        score = _similarity(ocr_text, name)
+        if score > best_score:
+            best_score = score
+            best = name
+    return best, best_score
 
 
-def buscar_nombre(ruta: Path, nombres: list[str], gpu: bool = False) -> tuple[str | None, str]:
+def find_name(path: Path, names: list[str], gpu: bool = False) -> tuple[str | None, str]:
     """
-    Extrae texto OCR de la imagen y lo compara contra la lista de nombres.
+    Extracts OCR text from the image and compares it against the names list.
 
-    Devuelve (carpeta_destino, motivo_log):
-      - Si hay match ≥ umbral   → (nombre_de_la_lista, "NombreOCR → NombreLista (score%)")
-      - Si hay texto pero no encaja → (CARPETA_SIN_CLASIFICAR, "texto detectado, sin match")
-      - Si no hay texto en la imagen → (None, "sin texto OCR")
+    Returns (destination_folder, log_reason):
+      - Match >= threshold        → (name_from_list, 'OCR: "X" -> "Y" (NN% similarity)')
+      - Text found but no match   → (UNCLASSIFIED_FOLDER, "text detected, no match")
+      - No text found in image    → (None, "no OCR text")
     """
-    if not nombres:
-        return None, "lista de nombres vacía"
+    if not names:
+        return None, tr("ocr_names_empty")
 
-    textos, error_ocr = extraer_texto(ruta, gpu=gpu)
-    if error_ocr:
-        return None, f"error OCR: {error_ocr}"
-    if not textos:
-        return None, "sin texto OCR"
+    texts, ocr_error = extract_text(path, gpu=gpu)
+    if ocr_error:
+        return None, tr("ocr_error", error=ocr_error)
+    if not texts:
+        return None, tr("ocr_no_text")
 
-    # Probar cada línea OCR contra todos los nombres; quedarse con el mejor global
-    mejor_carpeta = None
-    mejor_score = 0.0
-    mejor_ocr = ""
+    # Try every OCR line against every name; keep the best overall match
+    best_folder = None
+    best_score = 0.0
+    best_ocr_text = ""
 
-    for texto in textos:
-        carpeta, score = _mejor_match(texto, nombres)
-        if score > mejor_score:
-            mejor_score = score
-            mejor_carpeta = carpeta
-            mejor_ocr = texto
+    for text in texts:
+        folder, score = _best_match(text, names)
+        if score > best_score:
+            best_score = score
+            best_folder = folder
+            best_ocr_text = text
 
-    pct = int(mejor_score * 100)
+    pct = int(best_score * 100)
 
-    if mejor_score >= UMBRAL_SIMILITUD:
-        motivo = f'OCR: "{mejor_ocr}" → "{mejor_carpeta}" ({pct}% similitud)'
-        return mejor_carpeta, motivo
+    if best_score >= SIMILARITY_THRESHOLD:
+        reason = tr("ocr_match", text=best_ocr_text, folder=best_folder, pct=pct)
+        return best_folder, reason
     else:
-        motivo = f'OCR: "{mejor_ocr}" sin match suficiente ({pct}% < {int(UMBRAL_SIMILITUD*100)}%)'
-        return CARPETA_SIN_CLASIFICAR, motivo
+        reason = tr("ocr_no_match", text=best_ocr_text, pct=pct,
+                     threshold=int(SIMILARITY_THRESHOLD * 100))
+        return UNCLASSIFIED_FOLDER, reason
 
 
 def reset_reader():

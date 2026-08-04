@@ -1,678 +1,766 @@
 """
 ui/app.py
-Ventana principal de OrganizadorFotos.
+Main window of PinkCat OCR Sort.
 """
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from pathlib import Path
 
-from ui.theme import *
-from ui.widgets import BotonAccion, EntradaRuta, PanelLog, BarraProgreso, BadgeStat
-from core.worker import TrabajadorOrganizador
-from core.nombres_config import cargar_nombres, guardar_nombres, crear_ejemplo
-from core.ocr_engine import UMBRAL_SIMILITUD
-from core.worker import CANCELAR_TODO, POR_FECHA
-from core.config_paths import resolver_ubicacion_sesion, resolver_ubicacion_nombres, guardar_puntero, guardar_json_atomico, leer_json
-from ui.revisor import VentanaRevisionLote
+import customtkinter as ctk
+
+from ui.theme import (
+    BG, PANEL, CARD, BORDER, ACCENT, ACCENT_DIM, TEXT, TEXT_DIM, TEXT_MUTED,
+    SUCCESS, DANGER, WARNING, RADIUS_BTN, PAD, PAD_SM, FONT_UI, FONT_UI_SM,
+    WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT,
+    ACTIVE_THEME_NAME,
+)
+from ui.widgets import ActionButton, PathEntry, LogPanel, ProgressPanel, StatBadge
+from core.worker import OrganizerWorker
+from core.names_config import load_names, create_sample
+from core.ocr_engine import SIMILARITY_THRESHOLD
+from core.config_paths import (
+    resolve_session_location, resolve_names_location,
+    save_pointer, save_json_atomic, read_json,
+)
+from core.i18n import load_translations, tr, set_language, get_language, \
+    available_languages, on_language_changed
+from ui.review_window import BatchReviewWindow
+
+LANGUAGE_DIR = Path(__file__).resolve().parent.parent / "language"
+ICON_DIR = Path(__file__).resolve().parent.parent / "ico"
+THEME_KEYS = ("pink", "green", "pro")
 
 
-class OrganizadorApp(tk.Tk):
+class MainWindow(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.withdraw()  # oculto hasta resolver la ubicación de la sesión
-        self.title("PinkCat OCR Sort")
-        self.geometry("1140x700")
-        self.minsize(900, 580)
-        self.configure(bg=BG_BASE)
-        self._centrar_ventana(1140, 700)
+        load_translations(LANGUAGE_DIR / "translations.csv")
 
-        # Ubicación configurable del sesion.json real (puntero en %APPDATA%,
-        # elección obligatoria en el primer uso si no hay puntero válido).
-        self._sesion_path = resolver_ubicacion_sesion(self)
-        # Ídem para la lista de nombres (nombres.txt): puntero propio,
-        # NUNCA la ruta absoluta dentro de sesion.json (que sí viaja
-        # sincronizado y podría no coincidir entre ordenadores).
-        self._nombres_path = resolver_ubicacion_nombres(self, crear_inicial=crear_ejemplo)
+        self.withdraw()  # hidden until the session location is resolved
+        self.title(tr("app_title"))
+        self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        self.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+        self.configure(fg_color=BG)
+        self._set_icon()
+        self._center_window(WINDOW_WIDTH, WINDOW_HEIGHT)
+
+        # Configurable location of the real session.json (pointer in
+        # %APPDATA%, mandatory choice on first use if there's no pointer).
+        self._session_path = resolve_session_location(self)
+        # Same for the names list (names.txt): its own pointer, NEVER the
+        # absolute path inside session.json (which does travel synced and
+        # might not match between computers).
+        self._names_path = resolve_names_location(self, create_initial=create_sample)
         self.deiconify()
+        # CTk's mainloop() runs a one-time "set dark titlebar color" step on
+        # Windows the first time the window is shown, which withdraws and
+        # re-shows it based on internal state that's only tracked once
+        # mainloop()/update() has run. Since we already withdrew/deiconified
+        # manually above (to hide the window during the first-run dialogs),
+        # calling update() now marks that bookkeeping as done so mainloop()
+        # doesn't redo it later and get the restore step wrong (window stuck
+        # withdrawn).
+        self.update()
 
-        self._trabajador: TrabajadorOrganizador | None = None
-        self._en_proceso = False
-        self._nombres: list[str] = []
-        self._conteo_carpetas: dict[str, int] = {}  # nombre → archivos enviados
-        self._modo_revision = tk.BooleanVar(value=False)
+        self._worker: OrganizerWorker | None = None
+        self._processing = False
+        self._names: list[str] = []
+        self._folder_counts: dict[str, int] = {}  # name -> files sent
+        self._review_mode_var = tk.BooleanVar(value=False)
+        self._theme_var = tk.StringVar(value=ACTIVE_THEME_NAME)
 
-        self._construir_ui()
-        self._aplicar_estilo_ttk()
-        self._cargar_nombres_inicio()
-        self._restaurar_sesion()
+        self._build_menu()
+        self._build_ui()
+        self._load_names_on_start()
+        self._restore_session()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        on_language_changed(self.refresh_language)
 
-    def _centrar_ventana(self, w, h):
+    def _set_icon(self):
+        ico_path = ICON_DIR / "PinkCat OCR Sort.ico"
+        if ico_path.exists():
+            try:
+                self.iconbitmap(str(ico_path))
+            except Exception:
+                pass
+
+    def _center_window(self, w, h):
         self.update_idletasks()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
+    #  Classic top settings menu
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_menu(self):
+        self._menubar = tk.Menu(self, tearoff=0)
+        self._settings_menu = tk.Menu(self._menubar, tearoff=0)
+
+        self._language_menu = tk.Menu(self._settings_menu, tearoff=0)
+        self._language_var = tk.StringVar(value=get_language())
+        for language in available_languages():
+            self._language_menu.add_radiobutton(
+                label=language, variable=self._language_var, value=language,
+                command=lambda l=language: self._change_language(l),
+            )
+        self._settings_menu.add_cascade(label=tr("menu_language"), menu=self._language_menu)
+
+        self._theme_menu = tk.Menu(self._settings_menu, tearoff=0)
+        for theme_key in THEME_KEYS:
+            self._theme_menu.add_radiobutton(
+                label=tr(f"theme_{theme_key}"), variable=self._theme_var, value=theme_key,
+                command=lambda t=theme_key: self._change_theme(t),
+            )
+        self._settings_menu.add_cascade(label=tr("menu_theme"), menu=self._theme_menu)
+
+        self._menubar.add_cascade(label=tr("menu_settings"), menu=self._settings_menu)
+        self.configure(menu=self._menubar)
+
+    def _change_language(self, language: str):
+        set_language(language)
+        self._save_session()
+
+    def _change_theme(self, theme_key: str):
+        self._theme_var.set(theme_key)
+        self._save_session()
+        messagebox.showinfo(tr("menu_theme"), tr("menu_theme_restart_notice"))
+
+    # ──────────────────────────────────────────────────────────────────────
     #  UI
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
 
-    def _construir_ui(self):
-        self._construir_barra_titulo()
-        cuerpo = tk.Frame(self, bg=BG_BASE)
-        cuerpo.pack(fill="both", expand=True)
+    def _build_ui(self):
+        self._build_title_bar()
+        body = ctk.CTkFrame(self, fg_color=BG)
+        body.pack(fill="both", expand=True)
 
-        panel_izq = tk.Frame(cuerpo, bg=BG_PANEL, width=360)
-        panel_izq.pack(side="left", fill="y", padx=(0, 1))
-        panel_izq.pack_propagate(False)
-        self._construir_panel_config(panel_izq)
+        left_panel = ctk.CTkFrame(body, fg_color=PANEL, width=380, corner_radius=0)
+        left_panel.pack(side="left", fill="y", padx=(0, 1))
+        left_panel.pack_propagate(False)
+        self._build_left_panel(left_panel)
 
-        panel_der = tk.Frame(cuerpo, bg=BG_BASE)
-        panel_der.pack(side="left", fill="both", expand=True)
-        self._construir_panel_progreso(panel_der)
+        right_panel = ctk.CTkFrame(body, fg_color=BG, corner_radius=0)
+        right_panel.pack(side="left", fill="both", expand=True)
+        self._build_progress_area(right_panel)
 
-    def _construir_barra_titulo(self):
-        barra = tk.Frame(self, bg=BG_PANEL, height=42)
-        barra.pack(fill="x")
-        barra.pack_propagate(False)
-        izq = tk.Frame(barra, bg=BG_PANEL)
-        izq.pack(side="left", padx=16, pady=8)
-        tk.Label(izq, text="▣", font=("Consolas", 14), bg=BG_PANEL, fg=ACCENT).pack(side="left", padx=(0, 8))
-        tk.Label(izq, text="PINKCAT OCR SORT", font=("Consolas", 11, "bold"), bg=BG_PANEL, fg=FG_PRIMARY).pack(side="left")
-        tk.Label(izq, text="  v1.2", font=FONT_MONO_SM, bg=BG_PANEL, fg=FG_MUTED).pack(side="left")
-        tk.Frame(self, bg=BORDER_ACCENT, height=1).pack(fill="x")
+    def _build_title_bar(self):
+        bar = ctk.CTkFrame(self, fg_color=PANEL, height=44, corner_radius=0)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
 
-    def _construir_panel_config(self, parent):
+        left = ctk.CTkFrame(bar, fg_color=PANEL)
+        left.pack(side="left", padx=16, pady=8)
+        ctk.CTkLabel(left, text="▣", font=("Consolas", 16), text_color=ACCENT).pack(side="left", padx=(0, 8))
+        self._title_label = ctk.CTkLabel(left, text=tr("app_title").upper(),
+                                          font=("Consolas", 13, "bold"), text_color=TEXT)
+        self._title_label.pack(side="left")
+        self._version_label = ctk.CTkLabel(left, text=f"  {tr('app_version')}",
+                                            font=("Consolas", 10), text_color=TEXT_MUTED)
+        self._version_label.pack(side="left")
+
+        # PinkCat mascot logo, top-right of the title bar (Design System §8/§9)
+        logo_path = ICON_DIR / "logo.png"
+        if logo_path.exists():
+            from PIL import Image
+            logo_img = Image.open(logo_path)
+            logo_ctk_img = ctk.CTkImage(light_image=logo_img, dark_image=logo_img, size=(28, 28))
+            ctk.CTkLabel(bar, text="", image=logo_ctk_img).pack(side="right", padx=16)
+
+        ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).pack(fill="x")
+
+    def _build_left_panel(self, parent):
         pad = {"padx": PAD, "pady": (0, PAD_SM)}
 
-        # ── 01 Carpetas ────────────────────────────────────────────────────────
-        self._seccion_titulo(parent, "01  CARPETAS")
-        self._entrada_origen = EntradaRuta(parent, "Carpeta origen",
-            placeholder="Selecciona la carpeta de fotos…",
-            comando_examinar=self._elegir_origen)
-        self._entrada_origen.pack(fill="x", **pad)
-        self._entrada_destino = EntradaRuta(parent, "Carpeta destino",
-            placeholder="Donde se guardarán los archivos…",
-            comando_examinar=self._elegir_destino)
-        self._entrada_destino.pack(fill="x", **pad)
+        # ── 01 Folders ───────────────────────────────────────────────────
+        self._section_folders_label = self._section_title(parent, tr("section_folders"))
+        self._source_entry = PathEntry(parent, tr("label_source_folder"),
+            placeholder=tr("placeholder_source_folder"), browse_command=self._choose_source)
+        self._source_entry.pack(fill="x", **pad)
+        self._dest_entry = PathEntry(parent, tr("label_dest_folder"),
+            placeholder=tr("placeholder_dest_folder"), browse_command=self._choose_dest)
+        self._dest_entry.pack(fill="x", **pad)
 
-        self._mismo_destino = tk.BooleanVar(value=False)
-        chk = tk.Frame(parent, bg=BG_PANEL)
-        chk.pack(fill="x", padx=PAD, pady=(0, PAD))
-        tk.Checkbutton(chk, text="Organizar en la misma carpeta origen",
-            variable=self._mismo_destino, command=self._toggle_mismo_destino,
-            bg=BG_PANEL, fg=FG_SECONDARY, activebackground=BG_PANEL,
-            activeforeground=FG_PRIMARY, selectcolor=BG_INPUT,
-            font=FONT_UI_SM, relief="flat", bd=0).pack(anchor="w")
+        self._same_folder_var = tk.BooleanVar(value=False)
+        self._same_folder_check = ctk.CTkCheckBox(
+            parent, text=tr("check_same_folder"), variable=self._same_folder_var,
+            command=self._toggle_same_folder, font=FONT_UI_SM, text_color=TEXT_DIM,
+            fg_color=ACCENT_DIM, hover_color=ACCENT,
+        )
+        self._same_folder_check.pack(anchor="w", padx=PAD, pady=(0, PAD))
 
-        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
+        ctk.CTkFrame(parent, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
 
-        # ── 02 Nombres OCR ─────────────────────────────────────────────────────
-        self._seccion_titulo(parent, "02  NOMBRES (OCR FUZZY MATCH)")
+        # ── 02 OCR names ─────────────────────────────────────────────────
+        self._section_names_label = self._section_title(parent, tr("section_names"))
 
-        # Ruta del archivo .txt
-        fila_txt = tk.Frame(parent, bg=BG_PANEL)
-        fila_txt.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
-        self._entrada_txt = EntradaRuta(fila_txt, "Archivo de nombres (.txt)",
-            placeholder="Selecciona el archivo de nombres…",
-            comando_examinar=self._elegir_archivo_nombres)
-        self._entrada_txt.pack(side="left", fill="x", expand=True)
+        names_row = ctk.CTkFrame(parent, fg_color=PANEL)
+        names_row.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
+        self._names_entry = PathEntry(names_row, tr("label_names_file"),
+            placeholder=tr("placeholder_names_file"), browse_command=self._choose_names_file)
+        self._names_entry.pack(side="left", fill="x", expand=True)
 
-        # Botones cargar / crear ejemplo
-        botones_txt = tk.Frame(parent, bg=BG_PANEL)
-        botones_txt.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
+        names_buttons = ctk.CTkFrame(parent, fg_color=PANEL)
+        names_buttons.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
+        self._load_names_btn = ActionButton(names_buttons, tr("btn_load"),
+            command=self._reload_names, style="normal", width=110)
+        self._load_names_btn.pack(side="left", padx=(0, 4))
+        self._create_sample_btn = ActionButton(names_buttons, tr("btn_create_sample"),
+            command=self._create_sample_names, style="normal", width=150)
+        self._create_sample_btn.pack(side="left")
 
-        self._btn_cargar_txt = BotonAccion(botones_txt, "↺  CARGAR",
-            comando=self._cargar_nombres_manual, estilo="normal")
-        self._btn_cargar_txt.pack(side="left", padx=(0, 4))
+        self._names_status_label = ctk.CTkLabel(parent, text=tr("names_status_none"),
+            font=("Consolas", 11), text_color=TEXT_MUTED, anchor="w")
+        self._names_status_label.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
 
-        self._btn_crear_ejemplo = BotonAccion(botones_txt, "+ CREAR EJEMPLO",
-            comando=self._crear_ejemplo_nombres, estilo="normal")
-        self._btn_crear_ejemplo.pack(side="left")
+        threshold_row = ctk.CTkFrame(parent, fg_color=PANEL)
+        threshold_row.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
+        self._threshold_caption = ctk.CTkLabel(threshold_row, text=tr("label_threshold"),
+            font=FONT_UI_SM, text_color=TEXT_DIM)
+        self._threshold_caption.pack(side="left")
+        self._threshold_var = tk.IntVar(value=int(SIMILARITY_THRESHOLD * 100))
+        self._threshold_label = ctk.CTkLabel(threshold_row, text=f"{self._threshold_var.get()}%",
+            font=("Consolas", 13, "bold"), text_color=ACCENT, width=48)
+        self._threshold_label.pack(side="right")
+        self._threshold_slider = ctk.CTkSlider(
+            parent, from_=40, to=100, number_of_steps=60,
+            variable=self._threshold_var, command=self._update_threshold_label,
+            fg_color=CARD, progress_color=ACCENT_DIM, button_color=ACCENT,
+            button_hover_color=ACCENT,
+        )
+        self._threshold_slider.pack(fill="x", padx=PAD, pady=(0, 2))
 
-        # Badge con conteo de nombres cargados
-        self._lbl_nombres_estado = tk.Label(parent, text="Sin nombres cargados",
-            font=FONT_MONO_SM, bg=BG_PANEL, fg=FG_MUTED, anchor="w")
-        self._lbl_nombres_estado.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
+        self._threshold_hint_label = ctk.CTkLabel(parent, text=tr("threshold_hint"),
+            font=("Consolas", 10), text_color=TEXT_MUTED, justify="left", anchor="w")
+        self._threshold_hint_label.pack(anchor="w", padx=PAD, pady=(0, PAD_SM))
 
-        # Umbral de similitud
-        fila_umbral = tk.Frame(parent, bg=BG_PANEL)
-        fila_umbral.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
-        tk.Label(fila_umbral, text="Umbral similitud:", font=FONT_UI_SM,
-            bg=BG_PANEL, fg=FG_SECONDARY).pack(side="left")
-        self._lbl_umbral = tk.Label(fila_umbral, text=f"{int(UMBRAL_SIMILITUD*100)}%",
-            font=FONT_BADGE, bg=BG_PANEL, fg=ACCENT, width=5)
-        self._lbl_umbral.pack(side="right")
-        self._umbral_var = tk.IntVar(value=int(UMBRAL_SIMILITUD * 100))
-        self._slider_umbral = tk.Scale(parent, from_=40, to=100,
-            orient="horizontal", variable=self._umbral_var,
-            command=self._actualizar_umbral_label,
-            bg=BG_PANEL, fg=FG_SECONDARY, troughcolor=BG_INPUT,
-            activebackground=ACCENT, highlightthickness=0,
-            sliderrelief="flat", bd=0, showvalue=False)
-        self._slider_umbral.pack(fill="x", padx=PAD, pady=(0, 2))
+        options_row = ctk.CTkFrame(parent, fg_color=PANEL)
+        options_row.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
+        self._use_ocr_var = tk.BooleanVar(value=True)
+        self._use_ocr_check = ctk.CTkCheckBox(
+            options_row, text=tr("check_enable_ocr"), variable=self._use_ocr_var,
+            font=FONT_UI_SM, text_color=TEXT_DIM, fg_color=ACCENT_DIM, hover_color=ACCENT,
+        )
+        self._use_ocr_check.pack(side="left")
+        self._use_gpu_var = tk.BooleanVar(value=False)
+        self._use_gpu_check = ctk.CTkCheckBox(
+            options_row, text=tr("check_gpu"), variable=self._use_gpu_var,
+            font=FONT_UI_SM, text_color=TEXT_DIM, fg_color=ACCENT_DIM, hover_color=ACCENT,
+        )
+        self._use_gpu_check.pack(side="left", padx=(PAD, 0))
 
-        # Nota explicativa
-        tk.Label(parent,
-            text="Bajo = más permisivo  ·  Alto = más estricto\n"
-                 "Sin match → carpeta '_Sin clasificar'",
-            font=("Consolas", 7), bg=BG_PANEL, fg=FG_MUTED,
-            justify="left").pack(anchor="w", padx=PAD, pady=(0, PAD_SM))
+        ctk.CTkFrame(parent, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
 
-        # Opciones OCR
-        opciones = tk.Frame(parent, bg=BG_PANEL)
-        opciones.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
-        self._usar_ocr = tk.BooleanVar(value=True)
-        tk.Checkbutton(opciones, text="Activar OCR", variable=self._usar_ocr,
-            bg=BG_PANEL, fg=FG_SECONDARY, activebackground=BG_PANEL,
-            activeforeground=FG_PRIMARY, selectcolor=BG_INPUT,
-            font=FONT_UI_SM, relief="flat", bd=0).pack(side="left")
-        self._usar_gpu = tk.BooleanVar(value=False)
-        tk.Checkbutton(opciones, text="GPU (CUDA)", variable=self._usar_gpu,
-            bg=BG_PANEL, fg=FG_SECONDARY, activebackground=BG_PANEL,
-            activeforeground=FG_PRIMARY, selectcolor=BG_INPUT,
-            font=FONT_UI_SM, relief="flat", bd=0).pack(side="left", padx=(PAD, 0))
+        # ── 03 Action ────────────────────────────────────────────────────
+        self._section_action_label = self._section_title(parent, tr("section_action"))
 
-        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
+        self._review_mode_check = ctk.CTkCheckBox(
+            parent, text=tr("check_review_mode"), variable=self._review_mode_var,
+            font=FONT_UI_SM, text_color=TEXT_DIM, fg_color=ACCENT_DIM, hover_color=ACCENT,
+        )
+        self._review_mode_check.pack(anchor="w", padx=PAD, pady=(0, PAD_SM))
 
-        # ── 03 Acción ──────────────────────────────────────────────────────────
-        self._seccion_titulo(parent, "03  ACCIÓN")
+        buttons = ctk.CTkFrame(parent, fg_color=PANEL)
+        buttons.pack(fill="x", padx=PAD, pady=(0, PAD))
+        self._start_btn = ActionButton(buttons, tr("btn_start"),
+            command=self._start, style="primary", height=38)
+        self._start_btn.pack(fill="x", pady=(0, 6))
+        self._cancel_btn = ActionButton(buttons, tr("btn_cancel"),
+            command=self._cancel, style="danger", height=38)
+        self._cancel_btn.pack(fill="x")
+        self._cancel_btn.set_enabled(False)
 
-        # Modo revisión
-        chk_rev = tk.Frame(parent, bg=BG_PANEL)
-        chk_rev.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
-        tk.Checkbutton(chk_rev, text="Modo revisión (uno a uno con previsualización)",
-            variable=self._modo_revision,
-            bg=BG_PANEL, fg=FG_SECONDARY, activebackground=BG_PANEL,
-            activeforeground=FG_PRIMARY, selectcolor=BG_INPUT,
-            font=FONT_UI_SM, relief="flat", bd=0).pack(anchor="w")
+        ctk.CTkFrame(parent, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD)
+        self._filename_hint_label = ctk.CTkLabel(parent, text=tr("filename_format_hint"),
+            font=("Consolas", 10), text_color=TEXT_MUTED, anchor="w")
+        self._filename_hint_label.pack(anchor="w", padx=PAD)
 
-        btns = tk.Frame(parent, bg=BG_PANEL)
-        btns.pack(fill="x", padx=PAD, pady=(0, PAD))
-        self._btn_iniciar = BotonAccion(btns, "▶  INICIAR ORGANIZACIÓN",
-            comando=self._iniciar, estilo="primario")
-        self._btn_iniciar.pack(fill="x", pady=(0, 6))
-        self._btn_cancelar = BotonAccion(btns, "⛔  CANCELAR",
-            comando=self._cancelar, estilo="peligro")
-        self._btn_cancelar.pack(fill="x")
-        self._btn_cancelar.habilitar(False)
-
-        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD)
-        tk.Label(parent, text="Nombre: dd-MM-yyyy ; HH.mm.ss.ffff",
-            font=("Consolas", 7), bg=BG_PANEL, fg=FG_MUTED).pack(anchor="w", padx=PAD)
-
-    def _construir_panel_progreso(self, parent):
-        fila_stats = tk.Frame(parent, bg=BG_BASE)
-        fila_stats.pack(fill="x", padx=PAD, pady=PAD)
-        for attr, etiqueta, color in [
-            ("_stat_ok",       "Procesados", GREEN),
-            ("_stat_omitidos", "Omitidos",   FG_SECONDARY),
-            ("_stat_errores",  "Errores",    RED),
-            ("_stat_total",    "Total",      ACCENT),
+    def _build_progress_area(self, parent):
+        stats_row = ctk.CTkFrame(parent, fg_color=BG)
+        stats_row.pack(fill="x", padx=PAD, pady=PAD)
+        self._stat_widgets = {}
+        for key, label_key, color in [
+            ("processed", "stat_processed", SUCCESS),
+            ("skipped",   "stat_skipped",   TEXT_DIM),
+            ("errors",    "stat_errors",    DANGER),
+            ("total",     "stat_total",     ACCENT),
         ]:
-            badge = BadgeStat(fila_stats, etiqueta, color=color)
+            badge = StatBadge(stats_row, tr(label_key), color=color)
             badge.pack(side="left", fill="x", expand=True, padx=(0, 4))
-            setattr(self, attr, badge)
+            self._stat_widgets[key] = badge
 
-        barra_frame = tk.Frame(parent, bg=BG_PANEL,
-            highlightbackground=BORDER, highlightthickness=1)
-        barra_frame.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
-        self._barra = BarraProgreso(barra_frame)
-        self._barra.pack(fill="x")
+        self._progress_panel = ProgressPanel(parent, idle_text=tr("status_idle"))
+        self._progress_panel.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
+        self._progress_panel.set_count_format(tr("status_files_count", current=0, total=0))
 
-        # Dos logs en paralelo
-        logs_frame = tk.Frame(parent, bg=BG_BASE)
+        logs_frame = ctk.CTkFrame(parent, fg_color=BG)
         logs_frame.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
 
-        self._log = PanelLog(logs_frame, titulo="LOG DE ACTIVIDAD")
-        self._log.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        self._log_panel = LogPanel(logs_frame, title=tr("log_title_activity"),
+                                    on_clear_click=None)
+        self._log_panel.set_clear_label_text(tr("btn_clear"))
+        self._log_panel.pack(side="left", fill="both", expand=True, padx=(0, 4))
 
-        self._log_sin_clasificar = PanelLog(
-            logs_frame,
-            titulo="SIN CLASIFICAR",
-            color_cabecera=RED,
-        )
-        self._log_sin_clasificar.pack(side="left", fill="both", expand=True)
+        self._unclassified_log_panel = LogPanel(
+            logs_frame, title=tr("log_title_unclassified"), header_color=DANGER)
+        self._unclassified_log_panel.set_clear_label_text(tr("btn_clear"))
+        self._unclassified_log_panel.pack(side="left", fill="both", expand=True)
 
-    def _seccion_titulo(self, parent, texto):
-        tk.Label(parent, text=texto, font=("Consolas", 8, "bold"),
-            bg=BG_PANEL, fg=ACCENT, anchor="w", pady=6).pack(fill="x", padx=PAD)
+    def _section_title(self, parent, text):
+        label = ctk.CTkLabel(parent, text=text, font=("Consolas", 11, "bold"),
+                              text_color=ACCENT, anchor="w")
+        label.pack(fill="x", padx=PAD, pady=(10, 6))
+        return label
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  GESTIÓN DE NOMBRES
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
+    #  Language hot-reload
+    # ──────────────────────────────────────────────────────────────────────
 
-    def _cargar_nombres_inicio(self):
-        """Carga la lista de nombres desde la ubicación ya resuelta al
-        arrancar (self._nombres_path, vía core.config_paths)."""
-        ruta = self._nombres_path
-        self._entrada_txt.set(str(ruta))
-        if ruta.exists():
-            self._nombres = cargar_nombres(ruta)
-            self._actualizar_estado_nombres()
+    def refresh_language(self):
+        self._menubar.entryconfig(0, label=tr("menu_settings"))
+        self._settings_menu.entryconfig(0, label=tr("menu_language"))
+        self._settings_menu.entryconfig(1, label=tr("menu_theme"))
+        for i, theme_key in enumerate(THEME_KEYS):
+            self._theme_menu.entryconfig(i, label=tr(f"theme_{theme_key}"))
+
+        self.title(tr("app_title"))
+        self._version_label.configure(text=f"  {tr('app_version')}")
+
+        self._section_folders_label.configure(text=tr("section_folders"))
+        self._section_names_label.configure(text=tr("section_names"))
+        self._section_action_label.configure(text=tr("section_action"))
+
+        self._source_entry.set_label(tr("label_source_folder"))
+        self._source_entry.set_placeholder(tr("placeholder_source_folder"))
+        self._dest_entry.set_label(tr("label_dest_folder"))
+        self._dest_entry.set_placeholder(tr("placeholder_dest_folder"))
+        self._same_folder_check.configure(text=tr("check_same_folder"))
+
+        self._names_entry.set_label(tr("label_names_file"))
+        self._names_entry.set_placeholder(tr("placeholder_names_file"))
+        self._load_names_btn.set_text(tr("btn_load"))
+        self._create_sample_btn.set_text(tr("btn_create_sample"))
+        self._update_names_status()
+
+        self._threshold_caption.configure(text=tr("label_threshold"))
+        self._threshold_hint_label.configure(text=tr("threshold_hint"))
+        self._use_ocr_check.configure(text=tr("check_enable_ocr"))
+        self._use_gpu_check.configure(text=tr("check_gpu"))
+        self._review_mode_check.configure(text=tr("check_review_mode"))
+
+        self._start_btn.set_text(tr("btn_start"))
+        self._cancel_btn.set_text(tr("btn_cancel"))
+        self._filename_hint_label.configure(text=tr("filename_format_hint"))
+
+        for key, label_key in [("processed", "stat_processed"), ("skipped", "stat_skipped"),
+                                ("errors", "stat_errors"), ("total", "stat_total")]:
+            self._stat_widgets[key].set_label(tr(label_key))
+
+        self._progress_panel.set_idle_text(tr("status_idle"))
+        self._log_panel.set_clear_label_text(tr("btn_clear"))
+        self._unclassified_log_panel.set_clear_label_text(tr("btn_clear"))
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  NAMES MANAGEMENT
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _load_names_on_start(self):
+        """Loads the names list from the already-resolved location at
+        startup (self._names_path, via core.config_paths)."""
+        path = self._names_path
+        self._names_entry.set(str(path))
+        if path.exists():
+            self._names = load_names(path)
+            self._update_names_status()
         else:
-            self._lbl_nombres_estado.config(
-                text="Archivo de nombres no encontrado — usa CARGAR o CREAR EJEMPLO",
-                fg=ORANGE)
+            self._names_status_label.configure(text=tr("names_status_missing"), text_color=WARNING)
 
-    def _elegir_archivo_nombres(self):
-        ruta = filedialog.askopenfilename(
-            title="Selecciona el archivo de nombres",
-            filetypes=[("Archivos de texto", "*.txt"), ("Todos", "*.*")]
+    def _choose_names_file(self):
+        path = filedialog.askopenfilename(
+            title=tr("file_dialog_names"),
+            filetypes=[(tr("file_dialog_filter_text"), "*.txt"), (tr("file_dialog_filter_all"), "*.*")]
         )
-        if ruta:
-            ruta_p = Path(ruta)
-            self._entrada_txt.set(str(ruta_p))
-            self._nombres = cargar_nombres(ruta_p)
-            self._actualizar_estado_nombres()
-            self._nombres_path = ruta_p
-            guardar_puntero("ruta_nombres", ruta_p)
+        if path:
+            path_p = Path(path)
+            self._names_entry.set(str(path_p))
+            self._names = load_names(path_p)
+            self._update_names_status()
+            self._names_path = path_p
+            save_pointer("names_path", path_p)
 
-    def _cargar_nombres_manual(self):
-        ruta_str = self._entrada_txt.get().strip()
-        ruta = Path(ruta_str) if ruta_str else self._nombres_path
-        if not ruta.exists():
-            messagebox.showwarning("No encontrado", f"No se encuentra:\n{ruta}")
+    def _reload_names(self):
+        path_str = self._names_entry.get().strip()
+        path = Path(path_str) if path_str else self._names_path
+        if not path.exists():
+            messagebox.showwarning(tr("dialog_not_found_title"), tr("dialog_not_found_msg", path=path))
             return
-        self._nombres = cargar_nombres(ruta)
-        self._actualizar_estado_nombres()
-        self._log.agregar(f"ℹ Nombres recargados: {len(self._nombres)} entradas", "ℹ")
+        self._names = load_names(path)
+        self._update_names_status()
+        self._log_panel.add(tr("log_reloaded", count=len(self._names)), "ℹ")
 
-    def _crear_ejemplo_nombres(self):
-        ruta_str = self._entrada_txt.get().strip()
-        ruta = Path(ruta_str) if ruta_str else self._nombres_path
-        crear_ejemplo(ruta)
-        self._entrada_txt.set(str(ruta))
-        self._nombres = cargar_nombres(ruta)
-        self._actualizar_estado_nombres()
-        self._nombres_path = ruta
-        guardar_puntero("ruta_nombres", ruta)
-        messagebox.showinfo("Creado", f"Archivo de ejemplo creado:\n{ruta.resolve()}\n\nEdítalo con cualquier editor de texto.")
+    def _create_sample_names(self):
+        path_str = self._names_entry.get().strip()
+        path = Path(path_str) if path_str else self._names_path
+        create_sample(path)
+        self._names_entry.set(str(path))
+        self._names = load_names(path)
+        self._update_names_status()
+        self._names_path = path
+        save_pointer("names_path", path)
+        messagebox.showinfo(tr("dialog_created_title"), tr("dialog_created_msg", path=path.resolve()))
 
-    def _actualizar_estado_nombres(self):
-        n = len(self._nombres)
+    def _update_names_status(self):
+        n = len(self._names)
         if n == 0:
-            self._lbl_nombres_estado.config(
-                text="⚠ Archivo vacío o sin nombres válidos", fg=ORANGE)
+            self._names_status_label.configure(text=tr("names_status_empty"), text_color=WARNING)
         else:
-            preview = ", ".join(self._nombres[:4])
+            preview = ", ".join(self._names[:4])
             if n > 4:
-                preview += f" … (+{n-4})"
-            self._lbl_nombres_estado.config(
-                text=f"✔ {n} nombres: {preview}", fg=GREEN)
+                preview += f" … (+{n - 4})"
+            self._names_status_label.configure(text=tr("names_status_loaded", count=n, preview=preview),
+                                                text_color=SUCCESS)
 
-    def _actualizar_umbral_label(self, val=None):
-        self._lbl_umbral.config(text=f"{self._umbral_var.get()}%")
+    def _update_threshold_label(self, val=None):
+        self._threshold_label.configure(text=f"{int(self._threshold_var.get())}%")
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  CARPETAS
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
+    #  FOLDERS
+    # ──────────────────────────────────────────────────────────────────────
 
-    def _elegir_origen(self):
-        ruta = filedialog.askdirectory(title="Carpeta origen")
-        if ruta:
-            ruta_abs = str(Path(ruta).resolve())
-            self._entrada_origen.set(ruta_abs)
-            if self._mismo_destino.get():
-                self._entrada_destino.set(ruta_abs)
+    def _choose_source(self):
+        path = filedialog.askdirectory(title=tr("folder_dialog_source"))
+        if path:
+            abs_path = str(Path(path).resolve())
+            self._source_entry.set(abs_path)
+            if self._same_folder_var.get():
+                self._dest_entry.set(abs_path)
 
-    def _elegir_destino(self):
-        ruta = filedialog.askdirectory(title="Carpeta destino")
-        if ruta:
-            self._entrada_destino.set(str(Path(ruta).resolve()))
+    def _choose_dest(self):
+        path = filedialog.askdirectory(title=tr("folder_dialog_dest"))
+        if path:
+            self._dest_entry.set(str(Path(path).resolve()))
 
-    def _toggle_mismo_destino(self):
-        if self._mismo_destino.get():
-            origen_str = self._entrada_origen.get().strip()
-            origen = Path(origen_str) if origen_str else None
-            if origen and origen.is_dir():
-                self._entrada_destino.set(str(origen.resolve()))
+    def _toggle_same_folder(self):
+        if self._same_folder_var.get():
+            source_str = self._source_entry.get().strip()
+            source = Path(source_str) if source_str else None
+            if source and source.is_dir():
+                self._dest_entry.set(str(source.resolve()))
             else:
-                # Sin origen válido aún: se sincronizará al elegirlo con el botón
-                self._entrada_destino.set("")
+                # No valid source yet: will sync once chosen via the button
+                self._dest_entry.set("")
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  PROCESO
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
+    #  PROCESSING
+    # ──────────────────────────────────────────────────────────────────────
 
-    def _iniciar(self):
-        origen_str = self._entrada_origen.get().strip()
-        destino_str = self._entrada_destino.get().strip()
+    def _start(self):
+        source_str = self._source_entry.get().strip()
+        dest_str = self._dest_entry.get().strip()
 
-        if not origen_str:
-            messagebox.showwarning("Falta origen", "Selecciona una carpeta origen.")
+        if not source_str:
+            messagebox.showwarning(tr("dialog_source_missing_title"), tr("dialog_source_missing_msg"))
             return
-        if not destino_str:
-            messagebox.showwarning("Falta destino", "Selecciona una carpeta destino.")
+        if not dest_str:
+            messagebox.showwarning(tr("dialog_dest_missing_title"), tr("dialog_dest_missing_msg"))
             return
 
-        origen, destino = Path(origen_str), Path(destino_str)
-        if not origen.is_dir():
-            messagebox.showerror("Error", f"La carpeta origen no existe:\n{origen}")
+        source, dest = Path(source_str), Path(dest_str)
+        if not source.is_dir():
+            messagebox.showerror(tr("dialog_error_title"), tr("dialog_source_not_found_msg", path=source))
             return
-        destino.mkdir(parents=True, exist_ok=True)
+        dest.mkdir(parents=True, exist_ok=True)
 
-        usar_ocr = self._usar_ocr.get()
-        if usar_ocr and not self._nombres:
-            if not messagebox.askyesno("Sin nombres",
-                "OCR activado pero no hay nombres cargados.\n"
-                "Las imágenes irán al sistema de fechas.\n\n¿Continuar igualmente?"):
+        use_ocr = self._use_ocr_var.get()
+        if use_ocr and not self._names:
+            if not messagebox.askyesno(tr("dialog_no_names_title"), tr("dialog_no_names_msg")):
                 return
 
-        # Inyectar umbral al módulo OCR antes de lanzar
-        import core.ocr_engine as ocr_mod
-        ocr_mod.UMBRAL_SIMILITUD = self._umbral_var.get() / 100.0
+        # Inject the threshold into the OCR module before launching
+        import core.ocr_engine as ocr_module
+        ocr_module.SIMILARITY_THRESHOLD = self._threshold_var.get() / 100.0
 
-        self._en_proceso = True
-        self._btn_iniciar.habilitar(False)
-        self._btn_cancelar.habilitar(True)
-        self._barra.reset()
-        self._resetear_stats()
-        self._conteo_carpetas = {}
-        self._log_sin_clasificar.limpiar()
-        self._log.separador()
-        self._log.agregar(f"ℹ Origen: {origen}", "ℹ")
-        self._log.agregar(f"ℹ Destino: {destino}", "ℹ")
-        self._log.agregar(f"ℹ OCR: {'activado' if usar_ocr else 'desactivado'} · "
-                          f"Nombres: {len(self._nombres)} · "
-                          f"Umbral: {self._umbral_var.get()}%", "ℹ")
-        self._log.separador()
+        self._processing = True
+        self._start_btn.set_enabled(False)
+        self._cancel_btn.set_enabled(True)
+        self._progress_panel.reset()
+        self._reset_stats()
+        self._folder_counts = {}
+        self._unclassified_log_panel.clear()
+        self._log_panel.separator()
+        self._log_panel.add(tr("log_source", path=source), "ℹ")
+        self._log_panel.add(tr("log_dest", path=dest), "ℹ")
+        ocr_state = tr("state_enabled") if use_ocr else tr("state_disabled")
+        self._log_panel.add(tr("log_run_config", ocr_state=ocr_state,
+                                count=len(self._names), threshold=self._threshold_var.get()), "ℹ")
+        self._log_panel.separator()
 
-        self._destino_actual = destino
-        self._trabajador = TrabajadorOrganizador(
-            origen=origen,
-            destino=destino,
-            usar_ocr=usar_ocr,
-            usar_gpu=self._usar_gpu.get(),
-            nombres=self._nombres,
-            modo_revision=self._modo_revision.get(),
-            on_progreso=self._cb_progreso,
-            on_lote_listo=self._cb_lote_listo,
-            on_fin=self._cb_fin,
-            on_error=self._cb_error,
+        self._current_dest = dest
+        self._worker = OrganizerWorker(
+            source=source,
+            dest=dest,
+            use_ocr=use_ocr,
+            use_gpu=self._use_gpu_var.get(),
+            names=self._names,
+            review_mode=self._review_mode_var.get(),
+            on_progress=self._on_progress_cb,
+            on_batch_ready=self._on_batch_ready_cb,
+            on_finish=self._on_finish_cb,
+            on_error=self._on_error_cb,
         )
-        self._trabajador.start()
+        self._worker.start()
 
-    def _cancelar(self):
-        if self._trabajador:
-            self._trabajador.cancelar()
-            self._log.agregar("⛔ Cancelando…")
+    def _cancel(self):
+        if self._worker:
+            self._worker.cancel()
+            self._log_panel.add(tr("log_cancelling"))
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
     #  CALLBACKS
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
 
-    def _cb_progreso(self, actual, total, mensaje):
-        self.after(0, self._actualizar_progreso, actual, total, mensaje)
+    def _on_progress_cb(self, current, total, message):
+        self.after(0, self._update_progress, current, total, message)
 
-    def _cb_fin(self, stats):
-        self.after(0, self._finalizar, stats)
+    def _on_finish_cb(self, stats):
+        self.after(0, self._finish, stats)
 
-    def _cb_error(self, error):
-        self.after(0, self._mostrar_error, error)
+    def _on_error_cb(self, error):
+        self.after(0, self._show_error, error)
 
-    def _extraer_nombre_carpeta(self, mensaje: str) -> str | None:
-        """Detecta si el mensaje tiene [NombrePropio] y lo devuelve."""
+    def _extract_folder_name(self, message: str) -> str | None:
+        """Detects if the message has [FolderName] and returns it."""
         import re
-        m = re.search(r"\[([^\]]+)\]", mensaje)
+        m = re.search(r"\[([^\]]+)\]", message)
         if m:
-            nombre = m.group(1)
-            if nombre not in ("sin clasificar",) and nombre in self._nombres:
-                return nombre
+            name = m.group(1)
+            if name in self._names:
+                return name
         return None
 
-    def _cb_lote_listo(self, items, num_lote, total_lotes):
-        """El worker pausó con un lote analizado — abrir ventana en hilo principal."""
-        self.after(0, self._abrir_lote, items, num_lote, total_lotes)
+    def _on_batch_ready_cb(self, items, batch_num, total_batches):
+        """The worker paused with an analyzed batch — open the window on the main thread."""
+        self.after(0, self._open_batch, items, batch_num, total_batches)
 
-    def _abrir_lote(self, items, num_lote, total_lotes):
-        def on_confirmar(items_confirmados):
-            if self._trabajador:
-                self._trabajador.confirmar_lote(items_confirmados)
+    def _open_batch(self, items, batch_num, total_batches):
+        def on_confirm(confirmed_items):
+            if self._worker:
+                self._worker.confirm_batch(confirmed_items)
 
-        def on_cancelar():
-            if self._trabajador:
-                self._trabajador.cancelar_lote()
+        def on_cancel():
+            if self._worker:
+                self._worker.cancel_batch()
 
-        VentanaRevisionLote(
+        BatchReviewWindow(
             self,
             items=items,
-            num_lote=num_lote,
-            total_lotes=total_lotes,
-            nombres=self._nombres,
-            log_colores_fn=self._log._color_para_nombre,
-            on_confirmar=on_confirmar,
-            on_cancelar=on_cancelar,
+            batch_num=batch_num,
+            total_batches=total_batches,
+            names=self._names,
+            on_confirm=on_confirm,
+            on_cancel=on_cancel,
         )
 
-    def _actualizar_progreso(self, actual, total, mensaje):
-        self._barra.actualizar(actual / total if total else 0, actual, total, mensaje)
+    def _update_progress(self, current, total, message):
+        self._progress_panel.update(current / total if total else 0, current, total, message)
+        self._progress_panel.set_count_format(tr("status_files_count", current=current, total=total))
 
-        if mensaje.startswith("⚠"):
-            # Sin clasificar: rojo en ambos logs
-            self._log.agregar_sin_clasificar(mensaje)
-            self._log_sin_clasificar.agregar_sin_clasificar(mensaje)
-            self._stat_omitidos.set(int(self._stat_omitidos._var.get()) + 1)
+        if message.startswith("⚠"):
+            # Unclassified: red in both logs
+            self._log_panel.add_unclassified(message)
+            self._unclassified_log_panel.add_unclassified(message)
+            self._stat_widgets["skipped"].set(self._stat_widgets["skipped"].get() + 1)
             return
 
-        if mensaje.startswith("✅"):
-            nombre = self._extraer_nombre_carpeta(mensaje)
-            if nombre:
-                # Resaltar nombre en color en el log
-                self._log.agregar_con_nombre(mensaje, nombre)
-                # Contabilizar para el resumen final
-                self._conteo_carpetas[nombre] = self._conteo_carpetas.get(nombre, 0) + 1
+        if message.startswith("✅"):
+            name = self._extract_folder_name(message)
+            if name:
+                # Highlight the name in color in the log
+                self._log_panel.add_with_name(message, name)
+                # Count it for the final summary
+                self._folder_counts[name] = self._folder_counts.get(name, 0) + 1
             else:
-                self._log.agregar(mensaje)
-            self._stat_ok.set(int(self._stat_ok._var.get()) + 1)
+                self._log_panel.add(message)
+            self._stat_widgets["processed"].set(self._stat_widgets["processed"].get() + 1)
             return
 
-        self._log.agregar(mensaje)
-        if mensaje.startswith(("⏭", "➖")):
-            self._stat_omitidos.set(int(self._stat_omitidos._var.get()) + 1)
-        elif mensaje.startswith("❌"):
-            self._stat_errores.set(int(self._stat_errores._var.get()) + 1)
+        self._log_panel.add(message)
+        if message.startswith(("⏭", "➖")):
+            self._stat_widgets["skipped"].set(self._stat_widgets["skipped"].get() + 1)
+        elif message.startswith("❌"):
+            self._stat_widgets["errors"].set(self._stat_widgets["errors"].get() + 1)
 
-    def _finalizar(self, stats):
-        self._en_proceso = False
-        self._btn_iniciar.habilitar(True)
-        self._btn_cancelar.habilitar(False)
+    def _finish(self, stats):
+        self._processing = False
+        self._start_btn.set_enabled(True)
+        self._cancel_btn.set_enabled(False)
         total, ok = stats.get("total", 0), stats.get("ok", 0)
-        omitidos, errores = stats.get("omitidos", 0), stats.get("errores", 0)
-        self._stat_total.set(total)
-        self._stat_ok.set(ok)
-        self._stat_omitidos.set(omitidos)
-        self._stat_errores.set(errores)
-        self._barra.actualizar(1.0, total, total, "✔ Proceso completado")
-        self._log.separador()
-        self._log.resumen(f"  ✔ COMPLETADO — Total: {total} · OK: {ok} · Omitidos: {omitidos} · Errores: {errores}")
-        self._log.separador()
+        skipped, errors = stats.get("skipped", 0), stats.get("errors", 0)
+        self._stat_widgets["total"].set(total)
+        self._stat_widgets["processed"].set(ok)
+        self._stat_widgets["skipped"].set(skipped)
+        self._stat_widgets["errors"].set(errors)
+        self._progress_panel.update(1.0, total, total, tr("status_idle"))
+        self._log_panel.separator()
+        self._log_panel.summary(tr("log_summary_line", total=total, ok=ok, skipped=skipped, errors=errors))
+        self._log_panel.separator()
         if total == 0:
-            messagebox.showinfo("Sin archivos", "No se encontraron archivos para procesar.")
+            messagebox.showinfo(tr("dialog_no_files_title"), tr("dialog_no_files_msg"))
         else:
-            self._mostrar_resumen(total, ok, omitidos, errores, self._destino_actual)
+            self._show_summary(total, ok, skipped, errors, self._current_dest)
 
-    def _mostrar_resumen(self, total, ok, omitidos, errores, destino):
-        """Ventana emergente con resumen detallado por carpeta."""
-        from pathlib import Path as _Path
-
+    def _show_summary(self, total, ok, skipped, errors, dest):
+        """Popup window with a detailed per-folder summary."""
         try:
-            win = tk.Toplevel(self)
-            win.title("Resumen del proceso")
-            win.configure(bg=BG_BASE)
+            win = ctk.CTkToplevel(self)
+            win.title(tr("summary_window_title"))
+            win.configure(fg_color=BG)
             win.resizable(True, True)
             win.grab_set()
 
-            # ── Cabecera ──────────────────────────────────────────────────────
-            cab = tk.Frame(win, bg=BG_PANEL, pady=10)
-            cab.pack(fill="x")
-            tk.Label(cab, text="▣  RESUMEN DEL PROCESO",
-                     font=("Consolas", 11, "bold"), bg=BG_PANEL, fg=ACCENT).pack(padx=PAD)
-            tk.Frame(win, bg=BORDER_ACCENT, height=1).pack(fill="x")
+            header = ctk.CTkFrame(win, fg_color=PANEL)
+            header.pack(fill="x")
+            ctk.CTkLabel(header, text=tr("summary_header"), font=("Consolas", 14, "bold"),
+                         text_color=ACCENT).pack(padx=PAD, pady=10)
+            ctk.CTkFrame(win, fg_color=BORDER, height=1).pack(fill="x")
 
-            # ── Stats globales ────────────────────────────────────────────────
-            sf = tk.Frame(win, bg=BG_BASE)
-            sf.pack(fill="x", padx=PAD, pady=PAD)
-            for etiqueta, valor, color in [
-                ("Total",      total,    FG_PRIMARY),
-                ("Procesados", ok,       GREEN),
-                ("Omitidos",   omitidos, FG_SECONDARY),
-                ("Errores",    errores,  RED),
+            stats_frame = ctk.CTkFrame(win, fg_color=BG)
+            stats_frame.pack(fill="x", padx=PAD, pady=PAD)
+            for label_key, value, color in [
+                ("stat_total",     total,   TEXT),
+                ("stat_processed", ok,      SUCCESS),
+                ("stat_skipped",   skipped, TEXT_DIM),
+                ("stat_errors",    errors,  DANGER),
             ]:
-                col = tk.Frame(sf, bg=BG_CARD, padx=14, pady=8)
+                col = ctk.CTkFrame(stats_frame, fg_color=CARD)
                 col.pack(side="left", fill="x", expand=True, padx=(0, 4))
-                tk.Label(col, text=str(valor), font=("Consolas", 20, "bold"),
-                         bg=BG_CARD, fg=color).pack()
-                tk.Label(col, text=etiqueta.upper(), font=("Segoe UI", 7),
-                         bg=BG_CARD, fg=FG_MUTED).pack()
+                ctk.CTkLabel(col, text=str(value), font=("Consolas", 22, "bold"),
+                             text_color=color).pack(padx=14, pady=(8, 0))
+                ctk.CTkLabel(col, text=tr(label_key).upper(), font=("Segoe UI", 9),
+                             text_color=TEXT_MUTED).pack(padx=14, pady=(0, 8))
 
-            tk.Frame(win, bg=BORDER_ACCENT, height=1).pack(fill="x", padx=PAD)
+            ctk.CTkFrame(win, fg_color=BORDER, height=1).pack(fill="x", padx=PAD)
 
-            # ── Lista de carpetas ─────────────────────────────────────────────
-            if self._conteo_carpetas:
-                tk.Label(win, text="  CARPETAS DE DESTINO",
-                         font=("Consolas", 8, "bold"),
-                         bg=BG_BASE, fg=ACCENT, anchor="w", pady=8).pack(fill="x", padx=PAD)
+            if self._folder_counts:
+                ctk.CTkLabel(win, text=tr("summary_folders_title"), font=("Consolas", 11, "bold"),
+                             text_color=ACCENT, anchor="w").pack(fill="x", padx=PAD, pady=(10, 4))
 
-                # Área con scroll
-                contenedor = tk.Frame(win, bg=BG_BASE)
-                contenedor.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
+                container = ctk.CTkScrollableFrame(win, fg_color=BG)
+                container.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
 
-                canvas = tk.Canvas(contenedor, bg=BG_BASE, highlightthickness=0)
-                scroll = tk.Scrollbar(contenedor, orient="vertical",
-                                      command=canvas.yview,
-                                      bg=BG_CARD, width=8, relief="flat", bd=0)
-                inner = tk.Frame(canvas, bg=BG_BASE)
-                inner.bind("<Configure>",
-                           lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-                canvas.create_window((0, 0), window=inner, anchor="nw")
-                canvas.configure(yscrollcommand=scroll.set)
-                scroll.pack(side="right", fill="y")
-                canvas.pack(side="left", fill="both", expand=True)
-
-                for fila, (nombre, nuevas) in enumerate(
-                    sorted(self._conteo_carpetas.items(), key=lambda x: -x[1])
+                for row_i, (name, added) in enumerate(
+                    sorted(self._folder_counts.items(), key=lambda x: -x[1])
                 ):
-                    carpeta_real = _Path(destino) / nombre
+                    real_folder = Path(dest) / name
                     try:
-                        totales = sum(1 for f in carpeta_real.rglob("*") if f.is_file())
+                        total_files = sum(1 for f in real_folder.rglob("*") if f.is_file())
                     except Exception:
-                        totales = "?"
+                        total_files = "?"
 
-                    bg = BG_CARD if fila % 2 == 0 else BG_PANEL
-                    color = self._log._color_para_nombre(nombre)
+                    row_bg = CARD if row_i % 2 == 0 else PANEL
+                    color = self._log_panel.name_color(name)
 
-                    fila_frame = tk.Frame(inner, bg=bg)
-                    fila_frame.pack(fill="x", pady=1)
+                    row_frame = ctk.CTkFrame(container, fg_color=row_bg)
+                    row_frame.pack(fill="x", pady=1)
 
-                    # Bullet de color
-                    tk.Label(fila_frame, text="●", font=("Consolas", 10),
-                             bg=bg, fg=color, padx=8).pack(side="left")
-
-                    # Nombre
-                    tk.Label(fila_frame, text=nombre,
-                             font=("Consolas", 9, "bold"),
-                             bg=bg, fg=color, anchor="w", width=22).pack(side="left")
-
-                    # Nuevas X
-                    tk.Label(fila_frame, text="Nuevas",
-                             font=("Segoe UI", 8), bg=bg, fg=FG_MUTED).pack(side="left", padx=(8, 2))
-                    tk.Label(fila_frame, text=str(nuevas),
-                             font=("Consolas", 9, "bold"), bg=bg, fg=GREEN).pack(side="left")
-
-                    # Totales Y
-                    tk.Label(fila_frame, text="  ·  Totales",
-                             font=("Segoe UI", 8), bg=bg, fg=FG_MUTED).pack(side="left", padx=(4, 2))
-                    tk.Label(fila_frame, text=str(totales),
-                             font=("Consolas", 9, "bold"), bg=bg, fg=FG_PRIMARY).pack(side="left")
-
+                    ctk.CTkLabel(row_frame, text="●", font=("Consolas", 12),
+                                 text_color=color).pack(side="left", padx=(8, 4))
+                    ctk.CTkLabel(row_frame, text=name, font=("Consolas", 11, "bold"),
+                                 text_color=color, anchor="w", width=160).pack(side="left")
+                    ctk.CTkLabel(row_frame, text=tr("summary_new"), font=("Segoe UI", 10),
+                                 text_color=TEXT_MUTED).pack(side="left", padx=(8, 2))
+                    ctk.CTkLabel(row_frame, text=str(added), font=("Consolas", 11, "bold"),
+                                 text_color=SUCCESS).pack(side="left")
+                    ctk.CTkLabel(row_frame, text=f"  ·  {tr('summary_totals')}", font=("Segoe UI", 10),
+                                 text_color=TEXT_MUTED).pack(side="left", padx=(4, 2))
+                    ctk.CTkLabel(row_frame, text=str(total_files), font=("Consolas", 11, "bold"),
+                                 text_color=TEXT).pack(side="left")
             else:
-                tk.Label(win,
-                         text="No se enviaron archivos a carpetas de nombres.",
-                         font=("Segoe UI", 9), bg=BG_BASE, fg=FG_MUTED).pack(pady=PAD)
+                ctk.CTkLabel(win, text=tr("summary_no_folders"), font=("Segoe UI", 11),
+                             text_color=TEXT_MUTED).pack(pady=PAD)
 
-            # ── Botón cerrar ──────────────────────────────────────────────────
-            tk.Frame(win, bg=BORDER_ACCENT, height=1).pack(fill="x", padx=PAD, pady=(PAD_SM, 0))
-            tk.Button(win, text="  CERRAR  ", font=("Consolas", 9, "bold"),
-                      bg=ACCENT, fg=BG_BASE, relief="flat", bd=0,
-                      padx=20, pady=8, cursor="hand2",
-                      command=win.destroy).pack(pady=PAD)
+            ctk.CTkFrame(win, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=(PAD_SM, 0))
+            ctk.CTkButton(win, text=tr("btn_close"), font=("Consolas", 12, "bold"),
+                          fg_color=ACCENT, hover_color=ACCENT_DIM, text_color=BG,
+                          corner_radius=RADIUS_BTN, command=win.destroy).pack(pady=PAD)
 
-            # Tamaño y centrado
             win.update_idletasks()
-            n_filas = len(self._conteo_carpetas)
-            h = min(120 + 42 * n_filas + 120, 620)
+            n_rows = len(self._folder_counts)
+            h = min(140 + 40 * n_rows + 140, 620)
             w = 480
             sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-            win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+            win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
         except Exception as e:
-            messagebox.showerror("Error en resumen", str(e))
+            messagebox.showerror(tr("dialog_error_title"), str(e))
 
-    def _mostrar_error(self, error):
-        self._en_proceso = False
-        self._btn_iniciar.habilitar(True)
-        self._btn_cancelar.habilitar(False)
-        self._log.agregar(f"❌ ERROR FATAL: {error}")
-        messagebox.showerror("Error inesperado", error)
+    def _show_error(self, error):
+        self._processing = False
+        self._start_btn.set_enabled(True)
+        self._cancel_btn.set_enabled(False)
+        self._log_panel.add(tr("log_fatal_error", error=error))
+        messagebox.showerror(tr("dialog_unexpected_error_title"), error)
 
-    def _resetear_stats(self):
-        for attr in ("_stat_ok", "_stat_omitidos", "_stat_errores", "_stat_total"):
-            getattr(self, attr).set(0)
+    def _reset_stats(self):
+        for key in ("processed", "skipped", "errors", "total"):
+            self._stat_widgets[key].set(0)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SESIÓN
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
+    #  SESSION
+    # ──────────────────────────────────────────────────────────────────────
 
-    # La ruta real vive en self._sesion_path, resuelta en __init__ vía
-    # resolver_ubicacion_sesion() (puntero en %APPDATA%, elección
-    # obligatoria en el primer uso — ver core/config_paths.py).
+    # The real path lives in self._session_path, resolved in __init__ via
+    # resolve_session_location() (pointer in %APPDATA%, mandatory choice on
+    # first use — see core/config_paths.py).
 
-    def _guardar_sesion(self):
-        datos = {
-            "origen":        self._entrada_origen.get().strip(),
-            "destino":       self._entrada_destino.get().strip(),
-            "mismo_destino": self._mismo_destino.get(),
-            "umbral":        self._umbral_var.get(),
-            "usar_ocr":      self._usar_ocr.get(),
-            "usar_gpu":      self._usar_gpu.get(),
-            "modo_revision": self._modo_revision.get(),
+    def _save_session(self):
+        data = {
+            "source":       self._source_entry.get().strip(),
+            "destination":  self._dest_entry.get().strip(),
+            "same_folder":  self._same_folder_var.get(),
+            "threshold":    self._threshold_var.get(),
+            "use_ocr":      self._use_ocr_var.get(),
+            "use_gpu":      self._use_gpu_var.get(),
+            "review_mode":  self._review_mode_var.get(),
+            "language":     get_language(),
+            "theme":        self._theme_var.get(),
         }
         try:
-            # Guardado atómico: tmp + os.replace(), para no dejar nunca una
-            # versión a medio escribir si el archivo vive en una carpeta
-            # sincronizada (Drive, Dropbox…).
-            guardar_json_atomico(self._sesion_path, datos)
+            # Atomic save: tmp + os.replace(), so a half-written version is
+            # never left if the file lives in a synced folder (Drive,
+            # Dropbox…).
+            save_json_atomic(self._session_path, data)
         except Exception:
             pass
 
-    def _restaurar_sesion(self):
-        if not self._sesion_path.exists():
+    def _restore_session(self):
+        if not self._session_path.exists():
             return
         try:
-            datos = leer_json(self._sesion_path)
+            data = read_json(self._session_path)
         except Exception:
             return
 
-        if datos.get("origen"):
-            self._entrada_origen.set(datos["origen"])
-        if datos.get("destino"):
-            self._entrada_destino.set(datos["destino"])
-        self._mismo_destino.set(datos.get("mismo_destino", False))
+        if data.get("source"):
+            self._source_entry.set(data["source"])
+        if data.get("destination"):
+            self._dest_entry.set(data["destination"])
+        self._same_folder_var.set(data.get("same_folder", False))
 
-        if datos.get("umbral"):
-            self._umbral_var.set(datos["umbral"])
-            self._actualizar_umbral_label()
-        self._usar_ocr.set(datos.get("usar_ocr", True))
-        self._usar_gpu.set(datos.get("usar_gpu", False))
-        self._modo_revision.set(datos.get("modo_revision", False))
+        if data.get("threshold"):
+            self._threshold_var.set(data["threshold"])
+            self._threshold_slider.set(data["threshold"])
+            self._update_threshold_label()
+        self._use_ocr_var.set(data.get("use_ocr", True))
+        self._use_gpu_var.set(data.get("use_gpu", False))
+        self._review_mode_var.set(data.get("review_mode", False))
+
+        saved_language = data.get("language")
+        if saved_language and saved_language != get_language():
+            self._language_var.set(saved_language)
+            set_language(saved_language)
 
     def _on_closing(self):
-        self._guardar_sesion()
+        self._save_session()
         self.destroy()
-
-    def _aplicar_estilo_ttk(self):
-        estilo = tk.ttk.Style(self)
-        estilo.theme_use("clam")
-        estilo.configure("TScrollbar", background=BG_CARD, troughcolor=BG_BASE,
-            arrowcolor=FG_MUTED, bordercolor=BG_BASE, darkcolor=BG_BASE, lightcolor=BG_BASE)
