@@ -44,9 +44,16 @@ class BatchReviewWindow(ctk.CTkToplevel):
 
     def _center(self):
         self.update_idletasks()
+        # Kept non-resizable: CustomTkinter's CTkToplevel has a known
+        # rendering bug on Windows where a resizable toplevel can render
+        # completely blank until the user interacts with it. Making the
+        # confirm button reachable is instead handled below by fixing the
+        # *packing order* (button bar reserved before the scrollable grid),
+        # which doesn't need resizing to work. We just give the window a
+        # bit more default height as headroom.
         self.resizable(False, False)
         w = 960
-        h = min(820, self.winfo_screenheight() - 60)
+        h = min(860, self.winfo_screenheight() - 60)
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
@@ -54,24 +61,23 @@ class BatchReviewWindow(ctk.CTkToplevel):
 
     def _build_ui(self, batch_num, total_batches):
         header = ctk.CTkFrame(self, fg_color=PANEL, height=50)
-        header.pack(fill="x")
+        header.pack(side="top", fill="x")
         header.pack_propagate(False)
         ctk.CTkLabel(header, text=tr("review_header", num=batch_num, total=total_batches),
                      font=("Consolas", 15, "bold"), text_color=ACCENT).pack(side="left", padx=PAD)
         ctk.CTkLabel(header, text=tr("review_file_count", count=len(self._items)),
                      font=("Consolas", 12), text_color=TEXT_DIM).pack(side="left")
 
-        # Grid with scroll, in case a batch doesn't fit on screen
-        self._grid = ctk.CTkScrollableFrame(self, fg_color=BG)
-        self._grid.pack(fill="both", expand=True)
-
-        for idx, item in enumerate(self._items):
-            row, col = divmod(idx, COLS)
-            self._card(self._grid, idx, item, row, col)
-
-        # Button bar
+        # Button bar — packed with side="bottom" BEFORE the scrollable grid
+        # below, so it always keeps its own reserved space at the bottom of
+        # the window. Tk's pack manager hands out space to slaves in the
+        # order they're packed; if this bar were packed *after* a grid
+        # already using expand=True, the grid would already have claimed
+        # all remaining space and the bar could be left with none — which
+        # is exactly what made the confirm button disappear on batches with
+        # enough cards to fill the window.
         bottom = ctk.CTkFrame(self, fg_color=PANEL)
-        bottom.pack(fill="x")
+        bottom.pack(side="bottom", fill="x")
         bar = ctk.CTkFrame(bottom, fg_color=PANEL)
         bar.pack(fill="x", padx=PAD, pady=10)
         ActionButton(
@@ -84,6 +90,16 @@ class BatchReviewWindow(ctk.CTkToplevel):
         ).pack(side="left")
         ctk.CTkLabel(bar, text=tr("review_hint"), font=("Segoe UI", 11),
                      text_color=TEXT_MUTED).pack(side="right", padx=8)
+
+        # Grid with scroll, in case a batch doesn't fit on screen — takes
+        # whatever space is left between the header and the button bar
+        # above (which already reserved theirs).
+        self._grid = ctk.CTkScrollableFrame(self, fg_color=BG)
+        self._grid.pack(side="top", fill="both", expand=True)
+
+        for idx, item in enumerate(self._items):
+            row, col = divmod(idx, COLS)
+            self._card(self._grid, idx, item, row, col)
 
     # ──────────────────────────────────────────────────────────────────────
 

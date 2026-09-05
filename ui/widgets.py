@@ -39,14 +39,15 @@ _BUTTON_STYLES = {
 class ActionButton(ctk.CTkButton):
     """Flat action button with the shared enabled/disabled state pattern."""
 
-    def __init__(self, parent, text, command=None, style="normal", width=140, **kwargs):
+    def __init__(self, parent, text, command=None, style="normal", width=140,
+                 font=FONT_UI, **kwargs):
         fg, hover, fg_text = _BUTTON_STYLES.get(style, _BUTTON_STYLES["normal"])
         self._fg, self._hover, self._fg_text = fg, hover, fg_text
         super().__init__(
             parent, text=text, command=command, width=width,
             fg_color=fg, hover_color=hover, text_color=fg_text,
             text_color_disabled=TEXT_MUTED,
-            corner_radius=RADIUS_BTN, font=FONT_UI,
+            corner_radius=RADIUS_BTN, font=font,
             **kwargs,
         )
 

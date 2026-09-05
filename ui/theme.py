@@ -37,9 +37,9 @@ RADIUS_BTN  = THEME["corner_radius_btn"]
 # Consolas/Segoe UI on Green-Pink, Segoe UI only on Pro (Design System §5).
 _MONO_FAMILY = "Consolas" if ACTIVE_THEME_NAME in ("green", "pink") else "Segoe UI"
 
-FONT_MONO    = (_MONO_FAMILY, 9)
-FONT_MONO_SM = (_MONO_FAMILY, 8)
-FONT_MONO_XS = (_MONO_FAMILY, 7)
+FONT_MONO    = (_MONO_FAMILY, 12)
+FONT_MONO_SM = (_MONO_FAMILY, 11)
+FONT_MONO_XS = (_MONO_FAMILY, 10)
 FONT_UI      = ("Segoe UI", 12)
 FONT_UI_SM   = ("Segoe UI", 11)
 FONT_TITLE   = (_MONO_FAMILY, 14, "bold")
@@ -50,10 +50,10 @@ FONT_BADGE   = (_MONO_FAMILY, 13, "bold")
 PAD    = 12
 PAD_SM = 6
 
-WINDOW_WIDTH  = 1140
-WINDOW_HEIGHT = 700
-WINDOW_MIN_WIDTH  = 900
-WINDOW_MIN_HEIGHT = 580
+WINDOW_WIDTH  = 1180
+WINDOW_HEIGHT = 760
+WINDOW_MIN_WIDTH  = 980
+WINDOW_MIN_HEIGHT = 640
 
 # ── Per-message-type log colors ────────────────────────────────────────────────
 LOG_COLORS = {

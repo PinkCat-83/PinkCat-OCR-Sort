@@ -173,35 +173,53 @@ class MainWindow(ctk.CTk):
     def _build_left_panel(self, parent):
         pad = {"padx": PAD, "pady": (0, PAD_SM)}
 
+        # Section 03 (Action: review checkbox + Start/Cancel + filename
+        # hint) is built as a fixed footer, packed with side="bottom"
+        # BEFORE the scrollable area below. Tk's pack manager reserves
+        # space for slaves in the order they're packed — packing this
+        # fixed-size footer first guarantees Start/Cancel stay reachable
+        # no matter how tall sections 01/02 get or how small the window is
+        # resized, instead of the scrollable area swallowing all the space
+        # and leaving the footer clipped (same fix as review_window.py).
+        footer = ctk.CTkFrame(parent, fg_color=PANEL)
+        footer.pack(side="bottom", fill="x")
+        self._build_action_section(footer)
+
+        # Sections 01 (Folders) and 02 (OCR names) live inside a scrollable
+        # frame so the panel scrolls instead of clipping its own fields
+        # when the window is small or the content is tall.
+        scroll = ctk.CTkScrollableFrame(parent, fg_color=PANEL)
+        scroll.pack(side="top", fill="both", expand=True)
+
         # ── 01 Folders ───────────────────────────────────────────────────
-        self._section_folders_label = self._section_title(parent, tr("section_folders"))
-        self._source_entry = PathEntry(parent, tr("label_source_folder"),
+        self._section_folders_label = self._section_title(scroll, tr("section_folders"))
+        self._source_entry = PathEntry(scroll, tr("label_source_folder"),
             placeholder=tr("placeholder_source_folder"), browse_command=self._choose_source)
         self._source_entry.pack(fill="x", **pad)
-        self._dest_entry = PathEntry(parent, tr("label_dest_folder"),
+        self._dest_entry = PathEntry(scroll, tr("label_dest_folder"),
             placeholder=tr("placeholder_dest_folder"), browse_command=self._choose_dest)
         self._dest_entry.pack(fill="x", **pad)
 
         self._same_folder_var = tk.BooleanVar(value=False)
         self._same_folder_check = ctk.CTkCheckBox(
-            parent, text=tr("check_same_folder"), variable=self._same_folder_var,
+            scroll, text=tr("check_same_folder"), variable=self._same_folder_var,
             command=self._toggle_same_folder, font=FONT_UI_SM, text_color=TEXT_DIM,
             fg_color=ACCENT_DIM, hover_color=ACCENT,
         )
         self._same_folder_check.pack(anchor="w", padx=PAD, pady=(0, PAD))
 
-        ctk.CTkFrame(parent, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
+        ctk.CTkFrame(scroll, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
 
         # ── 02 OCR names ─────────────────────────────────────────────────
-        self._section_names_label = self._section_title(parent, tr("section_names"))
+        self._section_names_label = self._section_title(scroll, tr("section_names"))
 
-        names_row = ctk.CTkFrame(parent, fg_color=PANEL)
+        names_row = ctk.CTkFrame(scroll, fg_color=PANEL)
         names_row.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
         self._names_entry = PathEntry(names_row, tr("label_names_file"),
             placeholder=tr("placeholder_names_file"), browse_command=self._choose_names_file)
         self._names_entry.pack(side="left", fill="x", expand=True)
 
-        names_buttons = ctk.CTkFrame(parent, fg_color=PANEL)
+        names_buttons = ctk.CTkFrame(scroll, fg_color=PANEL)
         names_buttons.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
         self._load_names_btn = ActionButton(names_buttons, tr("btn_load"),
             command=self._reload_names, style="normal", width=110)
@@ -210,11 +228,11 @@ class MainWindow(ctk.CTk):
             command=self._create_sample_names, style="normal", width=150)
         self._create_sample_btn.pack(side="left")
 
-        self._names_status_label = ctk.CTkLabel(parent, text=tr("names_status_none"),
+        self._names_status_label = ctk.CTkLabel(scroll, text=tr("names_status_none"),
             font=("Consolas", 11), text_color=TEXT_MUTED, anchor="w")
         self._names_status_label.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
 
-        threshold_row = ctk.CTkFrame(parent, fg_color=PANEL)
+        threshold_row = ctk.CTkFrame(scroll, fg_color=PANEL)
         threshold_row.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
         self._threshold_caption = ctk.CTkLabel(threshold_row, text=tr("label_threshold"),
             font=FONT_UI_SM, text_color=TEXT_DIM)
@@ -224,18 +242,18 @@ class MainWindow(ctk.CTk):
             font=("Consolas", 13, "bold"), text_color=ACCENT, width=48)
         self._threshold_label.pack(side="right")
         self._threshold_slider = ctk.CTkSlider(
-            parent, from_=40, to=100, number_of_steps=60,
+            scroll, from_=40, to=100, number_of_steps=60,
             variable=self._threshold_var, command=self._update_threshold_label,
             fg_color=CARD, progress_color=ACCENT_DIM, button_color=ACCENT,
             button_hover_color=ACCENT,
         )
         self._threshold_slider.pack(fill="x", padx=PAD, pady=(0, 2))
 
-        self._threshold_hint_label = ctk.CTkLabel(parent, text=tr("threshold_hint"),
+        self._threshold_hint_label = ctk.CTkLabel(scroll, text=tr("threshold_hint"),
             font=("Consolas", 10), text_color=TEXT_MUTED, justify="left", anchor="w")
         self._threshold_hint_label.pack(anchor="w", padx=PAD, pady=(0, PAD_SM))
 
-        options_row = ctk.CTkFrame(parent, fg_color=PANEL)
+        options_row = ctk.CTkFrame(scroll, fg_color=PANEL)
         options_row.pack(fill="x", padx=PAD, pady=(0, PAD_SM))
         self._use_ocr_var = tk.BooleanVar(value=True)
         self._use_ocr_check = ctk.CTkCheckBox(
@@ -250,9 +268,12 @@ class MainWindow(ctk.CTk):
         )
         self._use_gpu_check.pack(side="left", padx=(PAD, 0))
 
-        ctk.CTkFrame(parent, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
+        ctk.CTkFrame(scroll, fg_color=BORDER, height=1).pack(fill="x", padx=PAD, pady=PAD_SM)
 
-        # ── 03 Action ────────────────────────────────────────────────────
+    def _build_action_section(self, parent):
+        """Section 03 — review checkbox, Start/Cancel, filename hint. Built
+        into the fixed footer frame from _build_left_panel(), so it's
+        always visible regardless of how sections 01/02 scroll above it."""
         self._section_action_label = self._section_title(parent, tr("section_action"))
 
         self._review_mode_check = ctk.CTkCheckBox(
